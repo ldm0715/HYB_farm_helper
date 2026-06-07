@@ -1,5 +1,24 @@
 # HYB Farm 作物收益排行榜
 
+<div align="center">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/logo.png" width="10%">
+</div>
+
+<div align="center">
+  <a href="https://greasyfork.org/zh-CN/scripts/581559-hyb-farm-helper">
+    <img alt="Tampermonkey" src="https://img.shields.io/badge/Tampermonkey-v5.5.0-orange?logo=tampermonkey&logoColor=white">
+  </a>
+
+  <a href="https://greasyfork.org/zh-CN/scripts/581559-hyb-farm-helper">
+    <img alt="Greasy Fork Version" src="https://img.shields.io/greasyfork/v/581559?label=version&color=green&logo=greasyfork&logoColor=white">
+  </a>
+
+  <a href="https://greasyfork.org/zh-CN/scripts/581559-hyb-farm-helper">
+    <img alt="License" src="https://img.shields.io/greasyfork/l/581559?label=license&color=blue&logo=opensourceinitiative&logoColor=white">
+  </a>
+</div>
+
+
 一个用于黑与白农场页面的 Tampermonkey 用户脚本。脚本会在页面右下角提供一个轻量面板，用于查看作物收益排行、自己农场地块成熟时间，以及好友农场偷菜状态。
 
 ## 项目简介
@@ -13,17 +32,13 @@
 
 ## 主要功能
 
-- 作物收益排行，按每小时收益从高到低排序
-- 全部 / 普通 / VIP 作物筛选
-- 当前最划算作物展示
 - 作物图标、成熟周期、产量、实时单价、单次收益、每小时收益展示
 - 自己农场未收获地块成熟时间展示
 - 有成熟作物时右下角悬浮按钮变为金黄色提醒
 - 成熟时间页支持一键收菜，并在操作前二次确认
-- 好友农场状态展示，按第一块地判断是否可偷菜
 - 好友农场访问链接和偷菜按钮
-- 偷菜请求冷却与结果提示
 - 浅色 / 暗色主题切换，主题选择会持久化
+
 
 ## 技术栈
 
@@ -40,19 +55,12 @@
 
 ### Tampermonkey 脚本
 
-1. 安装浏览器扩展 Tampermonkey。
-2. 在 Tampermonkey 中创建或更新用户脚本。
-3. 使用项目中的主脚本内容：
+1. 安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/)。
+2. 安装脚本：
+   1. 新建脚本后，粘贴`Tampermonkey/farm-profit-ranking.user.js`
+   2. 从[greasyfork-hyb-farm-helper](https://greasyfork.org/zh-CN/scripts/581559-hyb-farm-helper)下载脚本
 
-```text
-Tampermonkey/farm-profit-ranking.user.js
-```
-
-4. 打开：
-
-```text
-https://cdk.hybgzs.com/
-```
+4. 打开黑与白官网
 
 5. 点击页面右下角 `$` 按钮展开面板。
 
@@ -60,20 +68,41 @@ https://cdk.hybgzs.com/
 
 ### 命令行排行脚本
 
-CLI 脚本位于：
-
-```text
-script/crop-profit-ranking.js
-```
+CLI 脚本位于：`script/crop-profit-ranking.js`
 
 使用前需要在项目根目录创建 `cookie.txt`，内容为当前登录 Cookie。
 
+使用如下命令，即可在控制台打印出结果
 ```bash
 npm install
 node script/crop-profit-ranking.js
 ```
 
-注意：`cookie.txt` 包含敏感登录信息，不要提交到仓库。
+## 界面展示
+
+农场面板（亮色）：
+
+<div align="center">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm.png" width="80%">
+</div>
+
+农场面板（暗色）：
+
+<div align="center">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm_dark.png" width="80%">
+</div>
+
+好友农场面板：
+
+<div align="center">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/friends_farm.png" width="80%">
+</div>
+
+我的农场面板：
+
+<div align="center">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm.png" width="80%">
+</div>
 
 ## 目录结构
 
