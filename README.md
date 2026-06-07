@@ -83,25 +83,25 @@ node script/crop-profit-ranking.js
 农场面板（亮色）：
 
 <div align="center">
-<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm.png" width="80%">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm.png" width="65%">
 </div>
 
 农场面板（暗色）：
 
 <div align="center">
-<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm_dark.png" width="80%">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm_dark.png" width="65%">
 </div>
 
 好友农场面板：
 
 <div align="center">
-<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/friends_farm.png" width="80%">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/friends_farm.png" width="65%">
 </div>
 
 我的农场面板：
 
 <div align="center">
-<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm.png" width="80%">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm.png" width="65%">
 </div>
 
 ## 目录结构
