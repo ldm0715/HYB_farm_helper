@@ -1,0 +1,11 @@
+{
+  "name": "hyubai-farm-ranking",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "rank": "node crop-profit-ranking.js"
+  },
+  "dependencies": {
+    "cli-table3": "^0.6.5"
+  }
+}
