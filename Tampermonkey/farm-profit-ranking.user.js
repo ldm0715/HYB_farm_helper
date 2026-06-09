@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         HYB Farm Helper
 // @namespace    https://cdk.hybgzs.com/
-// @version      2.8.0
+// @version      2.8.15
 // @description  轻量展示最划算的作物收益排行、全部地块成熟时间和好友农场状态。
 // @author       gcnanmu
+// @license      MIT
 // @match        https://cdk.hybgzs.com/*
 // @connect      cdk.hybgzs.com
 // @grant        GM_xmlhttpRequest
@@ -17,10 +18,16 @@
   const PRICES_URL =
     "https://cdk.hybgzs.com/api/farm/recycle/prices?includeTrend=1&granularity=day&trendRange=7";
   const CROPS_URL = "https://cdk.hybgzs.com/api/farm/crops";
+  const PLOTS_URL = "https://cdk.hybgzs.com/api/farm/plots";
+  const INVENTORY_URL = "https://cdk.hybgzs.com/api/farm/inventory";
+  const RECYCLE_QUOTE_URL = "https://cdk.hybgzs.com/api/farm/recycle/quote";
+  const RECYCLE_URL = "https://cdk.hybgzs.com/api/farm/recycle";
+  const PLANT_BATCH_URL = "https://cdk.hybgzs.com/api/farm/plant-batch";
   const HARVEST_ALL_URL = "https://cdk.hybgzs.com/api/farm/harvest-all";
   const FRIENDS_STEALABLE_URL = "https://cdk.hybgzs.com/api/farm/friends/stealable";
   const STEAL_FRIEND_AUTO_URL = "https://cdk.hybgzs.com/api/farm/steal/friend-auto";
   const STEAL_COOLDOWN_MS = 5000;
+  const RECYCLE_MAX_SLIPPAGE_BPS = 300;
   const PRICE_DIVISOR = 500000;
   const ROOT_ID = "hyb-farm-profit-widget";
   const THEME_STORAGE_KEY = "hyb-farm-profit-theme";
@@ -82,6 +89,16 @@
     theme: getInitialTheme(),
     rows: [],
     crops: [],
+    farmStatusPanelOpen: false,
+    inventory: [],
+    inventoryLoaded: false,
+    inventoryPanelOpen: false,
+    inventorySelectMode: false,
+    inventorySelections: {},
+    inventoryRecycling: false,
+    inventoryPlanting: false,
+    inventoryRecycleNotice: "",
+    inventoryRecycleNoticeType: "",
     friends: [],
     error: "",
     updatedAt: "",
@@ -120,6 +137,8 @@
    * 重渲染一次，让悬浮按钮从绿色切到金黄色。
    */
   let cropReadyTimer = 0;
+  let cropRequestPromise = null;
+  let inventoryRequestPromise = null;
 
   /**
    * 通过 Tampermonkey 的 GM_xmlhttpRequest 请求 JSON 接口。
@@ -210,6 +229,17 @@
   }
 
   /**
+   * 将接口返回的价格整数转换为真实美元价格。
+   *
+   * @param {*} value 接口中的价格整数。
+   * @returns {number} 真实美元价格；非法价格返回 NaN。
+   */
+  function normalizeDisplayPrice(value) {
+    const displayPrice = Number(value);
+    return Number.isFinite(displayPrice) ? displayPrice / PRICE_DIVISOR : Number.NaN;
+  }
+
+  /**
    * 归一化实时回收价格接口数据。
    *
    * 价格接口可能同时返回 `data` 主列表和 `market.items` 市场列表。这里统一转成
@@ -230,10 +260,10 @@
 
     for (const item of [...directPrices, ...marketPrices]) {
       const seedId = item.seedId || item.id;
-      const displayPrice = Number(item.recyclePrice ?? item.unitPrice ?? item.price);
+      const unitPrice = normalizeDisplayPrice(item.recyclePrice ?? item.unitPrice ?? item.price);
 
-      if (seedId && Number.isFinite(displayPrice)) {
-        prices.set(seedId, displayPrice / PRICE_DIVISOR);
+      if (seedId && Number.isFinite(unitPrice)) {
+        prices.set(seedId, unitPrice);
       }
     }
 
@@ -255,13 +285,16 @@
   }
 
   /**
-   * 将数值格式化为美元展示文本。
+   * 将美元价格格式化为网站一致的两位小数展示文本。
    *
    * @param {number} value 美元数值。
    * @returns {string} 带 `$` 前缀的美元字符串。
    */
   function formatUsd(value) {
-    return `$${formatNumber(value)}`;
+    return `$${Number(value).toLocaleString("zh-CN", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
   }
 
   /**
@@ -336,6 +369,14 @@
    * @returns {object} 带实时成熟状态和剩余秒数的地块数据。
    */
   function getLiveCrop(crop) {
+    if (crop.isEmpty) {
+      return {
+        ...crop,
+        isMature: false,
+        remainingTime: Number.POSITIVE_INFINITY,
+      };
+    }
+
     const maturesAtTime = crop.maturesAt?.getTime?.();
     // 后端 remainingTime 是请求时刻的快照；悬浮按钮和成熟页需要按当前时间重算。
     const remainingTime =
@@ -499,7 +540,7 @@
   /**
    * 归一化当前地块作物数据。
    *
-   * 未收获的成熟地块排在最前面，其他地块按剩余时间从短到长排序。`remainingTime <= 0`
+   * 已种植的成熟地块排在最前面，其他已种植地块按剩余时间从短到长排序，空地排在最后。`remainingTime <= 0`
    * 会被当作成熟兜底，避免后端 `isMature` 延迟刷新导致 UI 不提示可收获。
    *
    * @param {object} payload `/api/farm/crops` 的响应 JSON。
@@ -512,31 +553,202 @@
         ? payload.data.crops
         : [];
 
-    return crops
-      .filter((crop) => !crop.isHarvested)
+    const normalizedCrops = crops
       .map((crop) => {
-        const remainingTime = Math.max(0, Number(crop.remainingTime || 0));
-        const maturesAt = crop.maturesAt ? new Date(crop.maturesAt) : null;
+        const isEmpty = Boolean(crop.isHarvested);
+        const remainingTime = isEmpty ? Number.POSITIVE_INFINITY : Math.max(0, Number(crop.remainingTime || 0));
+        const maturesAt = !isEmpty && crop.maturesAt ? new Date(crop.maturesAt) : null;
 
         return {
           id: crop.id,
           plotIndex: Number(crop.plotIndex),
           seedId: crop.seedId,
-          seedName: crop.seedName || crop.seedId || "未知作物",
-          iconUrl: buildCropIconUrl(crop.seedImage),
+          seedName: isEmpty ? "空地" : crop.seedName || crop.seedId || "未知作物",
+          iconUrl: isEmpty ? "" : buildCropIconUrl(crop.seedImage),
           maturesAt,
-          isMature: Boolean(crop.isMature) || remainingTime <= 0,
+          isMature: !isEmpty && (Boolean(crop.isMature) || remainingTime <= 0),
           remainingTime,
+          isEmpty,
           conditions: Array.isArray(crop.conditions) ? crop.conditions : [],
         };
       })
       .sort((a, b) => {
+        if (a.isEmpty !== b.isEmpty) {
+          return a.isEmpty ? 1 : -1;
+        }
+
         if (a.isMature !== b.isMature) {
           return a.isMature ? -1 : 1;
         }
 
-        return a.remainingTime - b.remainingTime;
+        if (a.remainingTime !== b.remainingTime) {
+          return a.remainingTime - b.remainingTime;
+        }
+
+        return a.plotIndex - b.plotIndex;
       });
+
+    const maxPlotIndexFromCrops = normalizedCrops.reduce((maxIndex, crop) => {
+      return Number.isFinite(crop.plotIndex) ? Math.max(maxIndex, crop.plotIndex) : maxIndex;
+    }, -1);
+    const plotLevels = Array.isArray(payload?.plotLevels) ? payload.plotLevels : [];
+    const maxPlotIndexFromLevels = plotLevels.reduce((maxIndex, plot) => {
+      const plotIndex = Number(plot?.plotIndex);
+      return Number.isFinite(plotIndex) ? Math.max(maxIndex, plotIndex) : maxIndex;
+    }, -1);
+    const maxSlots = Number(payload?.maxSlots);
+    const plotCount = Math.max(
+      Number.isFinite(maxSlots) ? maxSlots : 0,
+      plotLevels.length,
+      maxPlotIndexFromCrops + 1,
+      maxPlotIndexFromLevels + 1,
+    );
+    const cropsByPlotIndex = new Map();
+
+    for (const crop of normalizedCrops) {
+      if (!Number.isFinite(crop.plotIndex)) {
+        continue;
+      }
+
+      const existingCrop = cropsByPlotIndex.get(crop.plotIndex);
+      if (!existingCrop || (existingCrop.isEmpty && !crop.isEmpty)) {
+        cropsByPlotIndex.set(crop.plotIndex, crop);
+      }
+    }
+
+    for (let plotIndex = 0; plotIndex < plotCount; plotIndex += 1) {
+      if (!cropsByPlotIndex.has(plotIndex)) {
+        cropsByPlotIndex.set(plotIndex, createEmptyPlot(plotIndex));
+      }
+    }
+
+    return Array.from(cropsByPlotIndex.values()).sort((a, b) => {
+      if (a.isEmpty !== b.isEmpty) {
+        return a.isEmpty ? 1 : -1;
+      }
+
+      if (a.isMature !== b.isMature) {
+        return a.isMature ? -1 : 1;
+      }
+
+      if (a.remainingTime !== b.remainingTime) {
+        return a.remainingTime - b.remainingTime;
+      }
+
+      return a.plotIndex - b.plotIndex;
+    });
+  }
+
+  /**
+   * 拉取并归一化自己的农场地块；并发调用时复用同一个请求。
+   *
+   * @param {object} [options] 请求选项。
+   * @param {boolean} [options.force=false] 是否强制发起新请求。
+   * @returns {Promise<Array<object>>} 归一化后的地块列表。
+   */
+  function fetchCropsData({ force = false } = {}) {
+    if (!cropRequestPromise || force) {
+      cropRequestPromise = requestJson(CROPS_URL)
+        .then((payload) => normalizeCrops(payload))
+        .finally(() => {
+          cropRequestPromise = null;
+        });
+    }
+
+    return cropRequestPromise;
+  }
+
+  /**
+   * 归一化仓库数据。
+   *
+   * @param {object} payload `/api/farm/inventory` 的响应 JSON。
+   * @returns {Array<object>} 仓库作物列表。
+   */
+  function normalizeInventory(payload) {
+    const items = Array.isArray(payload?.data) ? payload.data : [];
+
+    return items.map((item) => ({
+      seedId: item.seedId || "",
+      seedName: item.seedName || item.seedId || "未知作物",
+      iconUrl: buildCropIconUrl(item.seedImage),
+      quantity: Math.max(0, Number(item.quantity) || 0),
+      recyclePrice: normalizeDisplayPrice(item.recyclePrice),
+    }));
+  }
+
+  /**
+   * 按当前仓库数量修正多选数量。
+   *
+   * @param {Array<object>} inventory 仓库作物列表。
+   * @param {object} selections 当前多选数量。
+   * @returns {object} 修正后的多选数量。
+   */
+  function normalizeInventorySelections(inventory, selections) {
+    const nextSelections = {};
+
+    for (const item of inventory) {
+      const quantity = Math.floor(Math.max(0, Number(item.quantity) || 0));
+      const selectedQuantity = clampNumber(selections[item.seedId], 0, quantity);
+
+      if (selectedQuantity > 0) {
+        nextSelections[item.seedId] = selectedQuantity;
+      }
+    }
+
+    return nextSelections;
+  }
+
+  /**
+   * 将数字限制在指定区间内，并按整数处理。
+   *
+   * @param {*} value 原始数值。
+   * @param {number} min 最小值。
+   * @param {number} max 最大值。
+   * @returns {number} 限制后的整数。
+   */
+  function clampNumber(value, min, max) {
+    const number = Math.floor(Number(value) || 0);
+    return Math.min(Math.max(number, min), max);
+  }
+
+  /**
+   * 拉取并归一化仓库数据；并发调用时复用同一个请求。
+   *
+   * @param {object} [options] 请求选项。
+   * @param {boolean} [options.force=false] 是否强制发起新请求。
+   * @returns {Promise<Array<object>>} 仓库作物列表。
+   */
+  function fetchInventoryData({ force = false } = {}) {
+    if (!inventoryRequestPromise || force) {
+      inventoryRequestPromise = requestJson(INVENTORY_URL)
+        .then((payload) => normalizeInventory(payload))
+        .finally(() => {
+          inventoryRequestPromise = null;
+        });
+    }
+
+    return inventoryRequestPromise;
+  }
+
+  /**
+   * 创建接口未返回的空地占位，保证农场情况展示完整地块。
+   *
+   * @param {number} plotIndex 地块序号。
+   * @returns {object} 空地地块数据。
+   */
+  function createEmptyPlot(plotIndex) {
+    return {
+      id: `empty-${plotIndex}`,
+      plotIndex,
+      seedId: "",
+      seedName: "空地",
+      iconUrl: "",
+      maturesAt: null,
+      isMature: false,
+      remainingTime: Number.POSITIVE_INFINITY,
+      isEmpty: true,
+      conditions: [],
+    };
   }
 
   /**
@@ -932,9 +1144,9 @@
         }
 
         .crop-icon.tiny {
-          width: 28px;
-          height: 28px;
-          border-radius: 7px;
+          width: 22px;
+          height: 22px;
+          border-radius: 6px;
         }
 
         .hero-name strong {
@@ -1002,8 +1214,155 @@
 
         .plot-grid {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+          grid-template-columns: repeat(6, minmax(0, 1fr));
+          gap: 6px;
+        }
+
+        .farm-status-panel {
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: #fff;
+          overflow: hidden;
+        }
+
+        :host(.theme-dark) .farm-status-panel {
+          background: #111827;
+        }
+
+        .farm-status-panel + .farm-status-panel {
+          margin-top: 8px;
+        }
+
+        .farm-status-panel summary {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 10px 12px;
+          color: var(--text);
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 800;
+          list-style: none;
+        }
+
+        .farm-status-panel summary::-webkit-details-marker {
+          display: none;
+        }
+
+        .farm-status-panel summary::after {
+          content: "展开";
+          color: var(--muted);
+          font-size: 11px;
+          font-weight: 700;
+        }
+
+        .farm-status-panel[open] summary {
+          border-bottom: 1px solid var(--line);
+        }
+
+        .farm-status-panel[open] summary::after {
+          content: "收起";
+        }
+
+        .farm-status-panel .plot-grid {
+          padding: 8px;
+        }
+
+        .inventory-actions {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
           gap: 8px;
+          padding: 0 8px 8px;
+        }
+
+        .inventory-action-buttons {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .inventory-select-toggle,
+        .inventory-sell-selected,
+        .inventory-plant-selected {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          height: 28px;
+          padding: 0 10px;
+          border: 1px solid rgba(19, 138, 91, 0.28);
+          border-radius: 7px;
+          background: #fff;
+          color: var(--accent-strong);
+          cursor: pointer;
+          font-size: 12px;
+          font-weight: 750;
+        }
+
+        .inventory-sell-selected {
+          background: var(--accent);
+          color: #fff;
+        }
+
+        .inventory-plant-selected {
+          border-color: rgba(183, 121, 31, 0.32);
+          background: var(--gold);
+          color: #3f2b05;
+        }
+
+        .inventory-sell-selected:disabled,
+        .inventory-plant-selected:disabled {
+          border-color: var(--line);
+          background: #eef2f6;
+          color: #98a2b3;
+          cursor: not-allowed;
+        }
+
+        .inventory-select-checkbox {
+          width: 14px;
+          height: 14px;
+          margin: 0;
+          accent-color: var(--accent);
+        }
+
+        :host(.theme-dark) .inventory-select-toggle {
+          background: #172033;
+        }
+
+        :host(.theme-dark) .inventory-sell-selected:disabled,
+        :host(.theme-dark) .inventory-plant-selected:disabled {
+          background: #1f2937;
+          color: #64748b;
+        }
+
+        .inventory-recycle-notice {
+          margin: 0 8px 8px;
+          padding: 8px 10px;
+          border: 1px solid rgba(19, 138, 91, 0.22);
+          border-radius: 8px;
+          background: #f6fef9;
+          color: var(--accent-strong);
+          font-size: 12px;
+          font-weight: 700;
+          line-height: 18px;
+          white-space: pre-line;
+        }
+
+        :host(.theme-dark) .inventory-recycle-notice {
+          border-color: rgba(100, 216, 154, 0.26);
+          background: #10251d;
+        }
+
+        .inventory-recycle-notice.error {
+          border-color: rgba(180, 35, 24, 0.2);
+          background: #fff7f5;
+          color: var(--warn);
+        }
+
+        :host(.theme-dark) .inventory-recycle-notice.error {
+          border-color: rgba(249, 112, 102, 0.26);
+          background: #2a1416;
         }
 
         .friend-list {
@@ -1137,9 +1496,9 @@
         .plot-card {
           display: flex;
           flex-direction: column;
-          gap: 8px;
-          min-height: 132px;
-          padding: 10px;
+          gap: 5px;
+          min-height: 86px;
+          padding: 6px;
           border: 1px solid var(--line);
           border-radius: 8px;
           background: #fff;
@@ -1158,15 +1517,32 @@
           box-shadow: inset 0 0 0 1px rgba(100, 216, 154, 0.12);
         }
 
+        .plot-card.empty {
+          border-style: dashed;
+          background: #f8fafc;
+        }
+
+        .plot-card.inventory-card {
+          align-items: center;
+        }
+
+        .plot-card.inventory-select-card {
+          min-height: 132px;
+        }
+
+        :host(.theme-dark) .plot-card.empty {
+          background: #0f172a;
+        }
+
         .plot-index {
           display: grid;
           place-items: center;
           width: 34px;
-          height: 24px;
+          height: 22px;
           border-radius: 999px;
           background: #eef2f6;
           color: #475467;
-          font-size: 11px;
+          font-size: 10px;
           font-weight: 800;
           font-variant-numeric: tabular-nums;
         }
@@ -1196,8 +1572,10 @@
         .plot-title {
           display: flex;
           align-items: center;
+          justify-content: center;
           gap: 6px;
           min-width: 0;
+          text-align: center;
         }
 
         .plot-title strong {
@@ -1205,25 +1583,120 @@
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          font-size: 13px;
-          line-height: 20px;
+          font-size: 12px;
+          line-height: 16px;
         }
 
         .plot-sub {
           color: var(--muted);
-          font-size: 11px;
-          line-height: 16px;
+          font-size: 10px;
+          line-height: 14px;
+          text-align: center;
         }
 
         .countdown {
           margin-top: auto;
+          text-align: center;
+        }
+
+        .inventory-metrics {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 2px;
+          margin-top: auto;
+          text-align: center;
+        }
+
+        .inventory-metrics strong {
+          display: block;
+          color: var(--accent-strong);
+          font-size: 11px;
+          line-height: 15px;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .inventory-metrics span {
+          color: var(--muted);
+          font-size: 10px;
+          line-height: 14px;
+        }
+
+        .inventory-stepper {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 4px;
+          width: 100%;
+          margin-top: 6px;
+        }
+
+        .inventory-stepper button,
+        .inventory-stepper input {
+          height: 28px;
+          border: 1px solid var(--line);
+          border-radius: 6px;
+          background: #fff;
+          color: var(--text);
+          font: inherit;
+          font-size: 11px;
+          line-height: 1;
+        }
+
+        :host(.theme-dark) .inventory-stepper button,
+        :host(.theme-dark) .inventory-stepper input {
+          background: #172033;
+        }
+
+        .inventory-stepper button {
+          cursor: pointer;
+          font-weight: 850;
+        }
+
+        .inventory-stepper button:disabled {
+          color: #98a2b3;
+          cursor: not-allowed;
+        }
+
+        .inventory-stepper input {
+          min-width: 0;
+          width: 100%;
+          box-sizing: border-box;
+          padding: 0 6px;
+          text-align: center;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .inventory-subtotal {
+          margin-top: auto;
+          text-align: center;
+        }
+
+        .inventory-subtotal strong {
+          display: block;
+          color: var(--accent-strong);
+          font-size: 11px;
+          line-height: 15px;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .inventory-subtotal span {
+          color: var(--muted);
+          font-size: 10px;
+          line-height: 14px;
+        }
+
+        .panel-empty {
+          grid-column: 1 / -1;
+          padding: 16px 10px;
+          color: var(--muted);
+          text-align: center;
+          font-size: 12px;
         }
 
         .countdown strong {
           display: block;
           color: var(--accent-strong);
-          font-size: 14px;
-          line-height: 20px;
+          font-size: 11px;
+          line-height: 15px;
           font-variant-numeric: tabular-nums;
         }
 
@@ -1394,7 +1867,7 @@
 
         .countdown span {
           color: var(--muted);
-          font-size: 11px;
+          font-size: 10px;
         }
 
         .badge {
@@ -1472,7 +1945,7 @@
           }
 
           .plot-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: repeat(3, minmax(0, 1fr));
           }
 
           .friend-bar {
@@ -1494,11 +1967,11 @@
           }
         }
       </style>
-      <button class="trigger" type="button" title="作物收益排行榜" aria-label="打开作物收益排行榜">$</button>
-      <section class="panel hidden" aria-label="作物收益排行榜">
+      <button class="trigger" type="button" title="黑与白农场小助手" aria-label="打开黑与白农场小助手">$</button>
+      <section class="panel hidden" aria-label="黑与白农场小助手">
         <div class="header">
           <div class="title">
-            <strong>作物收益排行榜</strong>
+            <strong>黑与白农场小助手</strong>
             <span class="status">等待加载</span>
           </div>
           <div class="actions">
@@ -1509,7 +1982,7 @@
         </div>
         <div class="tabs">
           <button class="tab active" type="button" data-page="profit">收益排行</button>
-          <button class="tab" type="button" data-page="crops">成熟时间</button>
+          <button class="tab" type="button" data-page="crops">我的农场</button>
           <button class="tab" type="button" data-page="friends">好友农场</button>
         </div>
         <div class="filters">
@@ -1557,7 +2030,7 @@
       render(api);
     });
 
-    api.refresh.addEventListener("click", () => refreshData(api));
+    api.refresh.addEventListener("click", () => refreshData(api, { force: true }));
 
     api.body.addEventListener("click", (event) => {
       if (!(event.target instanceof Element)) {
@@ -1576,8 +2049,57 @@
 
       if (button.dataset.action === "steal-friend" && !button.disabled) {
         handleStealFriend(api, button.dataset.friendId);
+        return;
+      }
+
+      if (button.dataset.action === "inventory-step" && !button.disabled) {
+        stepInventorySelection(api, button.dataset.seedId, Number(button.dataset.delta) || 0);
+        return;
+      }
+
+      if (button.dataset.action === "inventory-recycle-selected" && !button.disabled) {
+        handleRecycleSelectedInventory(api);
+        return;
+      }
+
+      if (button.dataset.action === "inventory-plant-selected" && !button.disabled) {
+        handlePlantSelectedInventory(api);
       }
     });
+
+    api.body.addEventListener("change", (event) => {
+      if (!(event.target instanceof HTMLInputElement)) {
+        return;
+      }
+
+      if (event.target.matches(".inventory-select-input")) {
+        setInventorySelection(api, event.target.dataset.seedId, event.target.value);
+        return;
+      }
+
+      if (event.target.matches(".inventory-select-checkbox")) {
+        setInventorySelectMode(api, event.target.checked);
+      }
+    });
+
+    api.body.addEventListener(
+      "toggle",
+      (event) => {
+        if (!(event.target instanceof HTMLDetailsElement)) {
+          return;
+        }
+
+        if (event.target.dataset.panel === "farm-status") {
+          state.farmStatusPanelOpen = event.target.open;
+          return;
+        }
+
+        if (event.target.dataset.panel === "inventory") {
+          state.inventoryPanelOpen = event.target.open;
+        }
+      },
+      true,
+    );
 
     for (const chip of api.chips) {
       chip.addEventListener("click", () => {
@@ -1625,7 +2147,7 @@
    */
   function needsData() {
     if (state.page === "crops") {
-      return state.crops.length === 0;
+      return state.crops.length === 0 || !state.inventoryLoaded;
     }
 
     if (state.page === "friends") {
@@ -1650,8 +2172,8 @@
     api.trigger.textContent = state.expanded ? "×" : "$";
     // 悬浮按钮承担成熟提醒职责：有成熟作物时金黄色，收获后随 crops 状态恢复绿色。
     api.trigger.classList.toggle("has-ready-crops", readyCrops);
-    api.trigger.title = readyCrops ? "有作物可以收获" : "作物收益排行榜";
-    api.trigger.setAttribute("aria-label", readyCrops ? "打开作物收益排行榜，有作物可以收获" : "打开作物收益排行榜");
+    api.trigger.title = readyCrops ? "有作物可以收获" : "黑与白农场小助手";
+    api.trigger.setAttribute("aria-label", readyCrops ? "打开黑与白农场小助手，有作物可以收获" : "打开黑与白农场小助手");
     api.themeToggle.textContent = isDarkTheme ? "☀️" : "🌙";
     api.themeToggle.title = isDarkTheme ? "切换浅色主题" : "切换暗色主题";
     api.themeToggle.setAttribute("aria-label", isDarkTheme ? "切换浅色主题" : "切换暗色主题");
@@ -1754,40 +2276,52 @@
    */
   function renderCropsPage(api) {
     const crops = getLiveCrops();
-    const readyCount = crops.filter((crop) => crop.isMature).length;
-    const nextCrop = crops.find((crop) => !crop.isMature);
-    const heroCrop = readyCount > 0 ? crops.find((crop) => crop.isMature) : nextCrop;
+    const plantedCrops = crops.filter((crop) => !crop.isEmpty);
+    const farmPlots = [...crops].sort((a, b) => a.plotIndex - b.plotIndex);
+    const inventory = state.inventory;
+    const selectedInventoryQuantity = getSelectedInventoryItems().reduce((sum, item) => sum + item.selectedQuantity, 0);
+    const inventoryBusy = state.inventoryRecycling || state.inventoryPlanting;
+    const inventoryNoticeHtml = state.inventoryRecycleNotice
+      ? `<div class="inventory-recycle-notice ${
+          state.inventoryRecycleNoticeType === "error" ? "error" : ""
+        }">${escapeHtml(state.inventoryRecycleNotice)}</div>`
+      : "";
+    const readyCount = plantedCrops.filter((crop) => crop.isMature).length;
+    const nextCrop = plantedCrops.find((crop) => !crop.isMature);
+    const heroCrop = readyCount > 0 ? plantedCrops.find((crop) => crop.isMature) : nextCrop;
 
     api.summary.textContent =
       crops.length > 0
-        ? `${readyCount} 可收获 · ${crops.length} 块地`
+        ? `${readyCount} 可收获 · ${plantedCrops.length} 已种 · ${crops.length} 块地 · ${inventory.length} 库存`
         : "";
 
     if (crops.length === 0) {
-      api.body.innerHTML = `<div class="empty">暂无种植中的作物</div>`;
+      api.body.innerHTML = `<div class="empty">暂无农场地块数据</div>`;
       return;
     }
 
     api.body.innerHTML = `
       <section class="hero">
         <div>
-          <div class="hero-label">${readyCount > 0 ? "现在可以收获" : "下一块成熟"}</div>
+          <div class="hero-label">${readyCount > 0 ? "现在可以收获" : heroCrop ? "下一块成熟" : "暂无种植"}</div>
           <div class="hero-name">
             ${heroCrop ? renderCropIcon(heroCrop.iconUrl, heroCrop.seedName) : ""}
-            <strong>${escapeHtml(readyCount > 0 ? `${readyCount} 块地可收获` : heroCrop.seedName)}</strong>
+            <strong>${escapeHtml(readyCount > 0 ? `${readyCount} 块地可收获` : heroCrop ? heroCrop.seedName : "暂无种植中的作物")}</strong>
             ${readyCount > 0 ? '<span class="badge yes">可收获</span>' : ""}
           </div>
           <div class="hero-sub">
             ${
               readyCount > 0
                 ? `最前面显示成熟地块 · 最近成熟记录 ${formatDateTime(heroCrop.maturesAt)}`
-                : `第 ${heroCrop.plotIndex + 1} 块地 · 剩余 ${formatCountdown(heroCrop.remainingTime)}`
+                : heroCrop
+                  ? `第 ${heroCrop.plotIndex + 1} 块地 · 剩余 ${formatCountdown(heroCrop.remainingTime)}`
+                  : "农场情况中仍会显示空地"
             }
           </div>
         </div>
         <div class="hero-money">
-          <strong>${readyCount > 0 ? "现在" : formatDateTime(heroCrop.maturesAt)}</strong>
-          <span>${readyCount > 0 ? "可收获" : "北京时间成熟"}</span>
+          <strong>${readyCount > 0 ? "现在" : heroCrop ? formatDateTime(heroCrop.maturesAt) : "-"}</strong>
+          <span>${readyCount > 0 ? "可收获" : heroCrop ? "北京时间成熟" : "等待种植"}</span>
           <div class="hero-actions">
             <button class="harvest-all" type="button" data-action="harvest-all" ${
               readyCount > 0 && !state.harvesting ? "" : "disabled"
@@ -1797,9 +2331,43 @@
           </div>
         </div>
       </section>
-      <div class="plot-grid">
-        ${crops.map((crop) => renderPlotCard(crop)).join("")}
-      </div>
+      <details class="farm-status-panel" data-panel="farm-status" ${state.farmStatusPanelOpen ? "open" : ""}>
+        <summary>农场情况</summary>
+        <div class="plot-grid">
+          ${farmPlots.map((crop) => renderPlotCard(crop)).join("")}
+        </div>
+      </details>
+      <details class="farm-status-panel" data-panel="inventory" ${
+        state.inventoryPanelOpen || state.inventorySelectMode ? "open" : ""
+      }>
+        <summary>我的仓库</summary>
+        <div class="plot-grid">
+          ${
+            inventory.length > 0
+              ? inventory.map((item) => renderInventoryCard(item)).join("")
+              : '<div class="panel-empty">仓库暂无作物</div>'
+          }
+        </div>
+        ${
+          inventory.length > 0
+            ? `<div class="inventory-actions">
+                <label class="inventory-select-toggle">
+                  <input class="inventory-select-checkbox" type="checkbox" ${state.inventorySelectMode ? "checked" : ""}>
+                  <span>多选</span>
+                </label>
+                <div class="inventory-action-buttons">
+                  <button class="inventory-sell-selected" type="button" data-action="inventory-recycle-selected" ${
+                    state.inventorySelectMode && selectedInventoryQuantity > 0 && !inventoryBusy ? "" : "disabled"
+                  }>${state.inventoryRecycling ? "卖出中" : "一键卖出"}</button>
+                  <button class="inventory-plant-selected" type="button" data-action="inventory-plant-selected" ${
+                    state.inventorySelectMode && selectedInventoryQuantity > 0 && !inventoryBusy ? "" : "disabled"
+                  }>${state.inventoryPlanting ? "种植中" : "一键种植"}</button>
+                </div>
+              </div>`
+            : ""
+        }
+        ${inventoryNoticeHtml}
+      </details>
     `;
   }
 
@@ -1962,6 +2530,27 @@
    * @returns {string} 地块卡片 HTML。
    */
   function renderPlotCard(crop) {
+    if (crop.isEmpty) {
+      return `
+        <article class="plot-card empty" title="第 ${crop.plotIndex + 1} 块地 - 空地">
+          <div class="plot-head">
+            <div class="plot-index">#${crop.plotIndex + 1}</div>
+            <span class="badge">空地</span>
+          </div>
+          <div>
+            <div class="plot-title">
+              <strong>空地</strong>
+            </div>
+            <div class="plot-sub">等待种植</div>
+          </div>
+          <div class="countdown">
+            <strong>-</strong>
+            <span>无作物</span>
+          </div>
+        </article>
+      `;
+    }
+
     const conditionText =
       crop.conditions.length > 0 ? `状态 ${crop.conditions.join("、")}` : "状态正常";
 
@@ -1986,6 +2575,457 @@
         </div>
       </article>
     `;
+  }
+
+  /**
+   * 渲染单个仓库作物卡片。
+   *
+   * @param {object} item 归一化后的仓库作物数据。
+   * @returns {string} 仓库作物卡片 HTML。
+   */
+  function renderInventoryCard(item) {
+    const recyclePriceText = Number.isFinite(item.recyclePrice) ? formatUsd(item.recyclePrice) : "-";
+    const seedId = item.seedId;
+    const stockQuantity = Math.floor(Math.max(0, Number(item.quantity) || 0));
+    const selectedQuantity = clampNumber(state.inventorySelections[seedId], 0, stockQuantity);
+    const inventoryBusy = state.inventoryRecycling || state.inventoryPlanting;
+
+    if (state.inventorySelectMode) {
+      const subtotal = Number.isFinite(item.recyclePrice) ? selectedQuantity * item.recyclePrice : Number.NaN;
+
+      return `
+        <article class="plot-card inventory-card inventory-select-card" title="${escapeHtml(item.seedName)} - ${escapeHtml(
+          seedId,
+        )}">
+          <div class="plot-title">
+            ${renderCropIcon(item.iconUrl, item.seedName, "tiny")}
+            <strong>${escapeHtml(item.seedName)}</strong>
+          </div>
+          <div class="inventory-metrics">
+            <div>
+              <strong>${formatNumber(stockQuantity, 0)}</strong>
+              <span>库存</span>
+            </div>
+          </div>
+          <div class="inventory-stepper">
+            <button type="button" data-action="inventory-step" data-seed-id="${escapeHtml(seedId)}" data-delta="1" ${
+              selectedQuantity >= stockQuantity || inventoryBusy ? "disabled" : ""
+            }>+</button>
+            <input
+              class="inventory-select-input"
+              type="number"
+              min="0"
+              max="${stockQuantity}"
+              step="1"
+              value="${selectedQuantity}"
+              data-seed-id="${escapeHtml(seedId)}"
+              inputmode="numeric"
+              ${inventoryBusy ? "disabled" : ""}
+            >
+            <button type="button" data-action="inventory-step" data-seed-id="${escapeHtml(seedId)}" data-delta="-1" ${
+              selectedQuantity <= 0 || inventoryBusy ? "disabled" : ""
+            }>-</button>
+          </div>
+          <div class="inventory-subtotal">
+            <strong>${Number.isFinite(subtotal) ? formatUsd(subtotal) : "-"}</strong>
+            <span>小计</span>
+          </div>
+        </article>
+      `;
+    }
+
+    return `
+      <article class="plot-card inventory-card" title="${escapeHtml(item.seedName)} - ${escapeHtml(item.seedId)}">
+        <div class="plot-title">
+          ${renderCropIcon(item.iconUrl, item.seedName, "tiny")}
+          <strong>${escapeHtml(item.seedName)}</strong>
+        </div>
+        <div class="inventory-metrics">
+          <div>
+            <strong>${formatNumber(stockQuantity, 0)}</strong>
+            <span>数量</span>
+          </div>
+          <div>
+            <strong>${recyclePriceText}</strong>
+            <span>回收价格</span>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  /**
+   * 设置仓库多选模式。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @param {boolean} enabled 是否启用多选模式。
+   * @returns {void}
+   */
+  function setInventorySelectMode(api, enabled) {
+    state = {
+      ...state,
+      inventoryPanelOpen: true,
+      inventorySelectMode: Boolean(enabled),
+      inventorySelections: normalizeInventorySelections(state.inventory, state.inventorySelections),
+    };
+    render(api);
+  }
+
+  /**
+   * 调整某个仓库作物的选择数量。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @param {string} seedId 作物 ID。
+   * @param {number} delta 增减数量。
+   * @returns {void}
+   */
+  function stepInventorySelection(api, seedId, delta) {
+    const currentValue = state.inventorySelections[seedId] || 0;
+    setInventorySelection(api, seedId, currentValue + delta);
+  }
+
+  /**
+   * 设置某个仓库作物的选择数量。只限制单项范围：0 到该作物库存数量。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @param {string} seedId 作物 ID。
+   * @param {*} value 原始输入数量。
+   * @returns {void}
+   */
+  function setInventorySelection(api, seedId, value) {
+    const item = state.inventory.find((inventoryItem) => inventoryItem.seedId === seedId);
+    if (!item) {
+      return;
+    }
+
+    const stockQuantity = Math.floor(Math.max(0, Number(item.quantity) || 0));
+    const selectedQuantity = clampNumber(value, 0, stockQuantity);
+    const nextSelections = { ...state.inventorySelections };
+
+    if (selectedQuantity > 0) {
+      nextSelections[seedId] = selectedQuantity;
+    } else {
+      delete nextSelections[seedId];
+    }
+
+    state = {
+      ...state,
+      inventorySelections: nextSelections,
+    };
+    render(api);
+  }
+
+  /**
+   * 获取当前仓库多选中数量大于 0 的作物。
+   *
+   * @returns {Array<object>} 带 selectedQuantity 的仓库作物列表。
+   */
+  function getSelectedInventoryItems() {
+    return state.inventory
+      .map((item) => {
+        const stockQuantity = Math.floor(Math.max(0, Number(item.quantity) || 0));
+        const selectedQuantity = clampNumber(state.inventorySelections[item.seedId], 0, stockQuantity);
+        return {
+          ...item,
+          selectedQuantity,
+        };
+      })
+      .filter((item) => item.selectedQuantity > 0);
+  }
+
+  /**
+   * 获取当前可种植空地数量。
+   *
+   * 后端 plots 接口的 totalSlots 是当前总土地数量；已种植数量以最新 crops 计算，避免空地补齐逻辑
+   * 或接口 freeSlots 字段变化影响判断。
+   *
+   * @returns {Promise<object>} 可种植空地数量和最新地块列表。
+   */
+  async function fetchPlantCapacity() {
+    const [plotsPayload, crops] = await Promise.all([
+      requestJson(PLOTS_URL),
+      fetchCropsData({ force: true }),
+    ]);
+    const totalSlots = Number(plotsPayload?.data?.totalSlots ?? plotsPayload?.totalSlots);
+    const fallbackFreeSlots = Number(plotsPayload?.data?.freeSlots ?? plotsPayload?.freeSlots);
+    const plantedCount = crops.filter((crop) => !crop.isEmpty).length;
+    const freeSlots = Number.isFinite(totalSlots)
+      ? Math.max(0, totalSlots - plantedCount)
+      : Number.isFinite(fallbackFreeSlots)
+        ? Math.max(0, fallbackFreeSlots)
+        : crops.filter((crop) => crop.isEmpty).length;
+
+    return {
+      crops,
+      freeSlots,
+      plantedCount,
+      totalSlots: Number.isFinite(totalSlots) ? totalSlots : plantedCount + freeSlots,
+    };
+  }
+
+  /**
+   * 获取作物当前回收报价。
+   *
+   * @param {string} seedId 作物 ID。
+   * @param {number} quantity 数量。
+   * @returns {Promise<object>} 报价数据。
+   */
+  async function fetchRecycleQuote(seedId, quantity) {
+    const payload = await requestJson(RECYCLE_QUOTE_URL, {
+      method: "POST",
+      body: { seedId, quantity },
+    });
+    const quote = payload?.data || {};
+
+    if (!quote.unitPrice) {
+      throw new Error("回收报价缺少单价");
+    }
+
+    return quote;
+  }
+
+  /**
+   * 回收单个仓库作物。
+   *
+   * @param {object} item 带 selectedQuantity 的仓库作物。
+   * @returns {Promise<object>} 回收结果数据。
+   */
+  async function recycleInventoryItem(item) {
+    const quote = await fetchRecycleQuote(item.seedId, item.selectedQuantity);
+    const payload = await requestJson(RECYCLE_URL, {
+      method: "POST",
+      body: {
+        seedId: item.seedId,
+        quantity: item.selectedQuantity,
+        expectedUnitPrice: String(quote.unitPrice),
+        maxSlippageBps: RECYCLE_MAX_SLIPPAGE_BPS,
+      },
+    });
+
+    return payload?.data || {};
+  }
+
+  /**
+   * 格式化单个作物回收成功提示。
+   *
+   * @param {object} item 仓库作物。
+   * @param {object} recycleData 回收接口返回 data。
+   * @returns {string} 成功提示。
+   */
+  function formatRecycleSuccessMessage(item, recycleData) {
+    const quantity = Math.max(0, Number(recycleData.quantity) || item.selectedQuantity);
+    const totalQuota = Number(recycleData.totalQuota);
+    const unitPrice = Number(recycleData.unitPrice);
+    const totalPrice = Number.isFinite(totalQuota)
+      ? normalizeDisplayPrice(totalQuota)
+      : Number.isFinite(unitPrice)
+        ? normalizeDisplayPrice(unitPrice) * quantity
+        : Number.NaN;
+
+    return `卖出${formatNumber(quantity, 0)}个${item.seedName}获得${Number.isFinite(totalPrice) ? formatUsd(totalPrice) : "-"}`;
+  }
+
+  /**
+   * 种植单个仓库作物。
+   *
+   * @param {object} item 带 selectedQuantity 的仓库作物。
+   * @returns {Promise<object>} 种植结果数据。
+   */
+  async function plantInventoryItem(item) {
+    const payload = await requestJson(PLANT_BATCH_URL, {
+      method: "POST",
+      body: {
+        seedId: item.seedId,
+        quantity: item.selectedQuantity,
+      },
+    });
+
+    return payload?.data || {};
+  }
+
+  /**
+   * 格式化单个作物种植成功提示。
+   *
+   * @param {object} item 仓库作物。
+   * @param {object} plantData 种植接口返回 data。
+   * @returns {string} 成功提示。
+   */
+  function formatPlantSuccessMessage(item, plantData) {
+    const quantity = Math.max(0, Number(plantData.plantedCount) || item.selectedQuantity);
+    return `种植 ${formatNumber(quantity, 0)} 个${item.seedName}成功`;
+  }
+
+  /**
+   * 一键回收当前多选的仓库作物。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @returns {Promise<void>}
+   */
+  async function handleRecycleSelectedInventory(api) {
+    if (state.inventoryRecycling || state.inventoryPlanting || !state.inventorySelectMode) {
+      return;
+    }
+
+    const selectedItems = getSelectedInventoryItems();
+    if (selectedItems.length === 0) {
+      return;
+    }
+
+    state = {
+      ...state,
+      inventoryPanelOpen: true,
+      inventoryRecycling: true,
+      inventoryRecycleNotice: "",
+      inventoryRecycleNoticeType: "",
+      error: "",
+    };
+    render(api);
+
+    const messages = [];
+
+    try {
+      for (const item of selectedItems) {
+        const recycleData = await recycleInventoryItem(item);
+        messages.push(formatRecycleSuccessMessage(item, recycleData));
+      }
+
+      const inventory = await fetchInventoryData({ force: true });
+
+      state = {
+        ...state,
+        inventory,
+        inventoryLoaded: true,
+        inventoryPanelOpen: true,
+        inventoryRecycling: false,
+        inventorySelections: {},
+        inventoryRecycleNotice: messages.join("\n"),
+        inventoryRecycleNoticeType: "success",
+        updatedAt: new Date().toLocaleTimeString("zh-CN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+      };
+    } catch (error) {
+      let inventory = state.inventory;
+
+      try {
+        inventory = await fetchInventoryData({ force: true });
+      } catch {
+        // 保留回收错误提示；库存刷新失败不额外覆盖。
+      }
+
+      state = {
+        ...state,
+        inventory,
+        inventoryLoaded: true,
+        inventoryPanelOpen: true,
+        inventoryRecycling: false,
+        inventorySelections: normalizeInventorySelections(inventory, state.inventorySelections),
+        inventoryRecycleNotice: [...messages, error.message || "一键卖出失败"].join("\n"),
+        inventoryRecycleNoticeType: "error",
+      };
+    }
+
+    render(api);
+  }
+
+  /**
+   * 一键种植当前多选的仓库作物。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @returns {Promise<void>}
+   */
+  async function handlePlantSelectedInventory(api) {
+    if (state.inventoryRecycling || state.inventoryPlanting || !state.inventorySelectMode) {
+      return;
+    }
+
+    const selectedItems = getSelectedInventoryItems();
+    const selectedQuantity = selectedItems.reduce((sum, item) => sum + item.selectedQuantity, 0);
+    if (selectedItems.length === 0 || selectedQuantity <= 0) {
+      return;
+    }
+
+    state = {
+      ...state,
+      inventoryPanelOpen: true,
+      inventoryPlanting: true,
+      inventoryRecycleNotice: "",
+      inventoryRecycleNoticeType: "",
+      error: "",
+    };
+    render(api);
+
+    const messages = [];
+
+    try {
+      const plantCapacity = await fetchPlantCapacity();
+
+      if (selectedQuantity > plantCapacity.freeSlots) {
+        throw new Error(
+          `空闲土地不足：当前可种 ${formatNumber(plantCapacity.freeSlots, 0)} 个，已选择 ${formatNumber(
+            selectedQuantity,
+            0,
+          )} 个`,
+        );
+      }
+
+      for (const item of selectedItems) {
+        const plantData = await plantInventoryItem(item);
+        messages.push(formatPlantSuccessMessage(item, plantData));
+      }
+
+      const [crops, inventory] = await Promise.all([
+        fetchCropsData({ force: true }),
+        fetchInventoryData({ force: true }),
+      ]);
+
+      state = {
+        ...state,
+        crops,
+        inventory,
+        inventoryLoaded: true,
+        inventoryPanelOpen: true,
+        inventoryPlanting: false,
+        inventorySelections: {},
+        inventoryRecycleNotice: messages.join("\n"),
+        inventoryRecycleNoticeType: "success",
+        updatedAt: new Date().toLocaleTimeString("zh-CN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+      };
+      scheduleNextCropReadyRender(api);
+    } catch (error) {
+      let crops = state.crops;
+      let inventory = state.inventory;
+
+      try {
+        [crops, inventory] = await Promise.all([
+          fetchCropsData({ force: true }),
+          fetchInventoryData({ force: true }),
+        ]);
+      } catch {
+        // 保留种植错误提示；数据刷新失败不额外覆盖。
+      }
+
+      state = {
+        ...state,
+        crops,
+        inventory,
+        inventoryLoaded: true,
+        inventoryPanelOpen: true,
+        inventoryPlanting: false,
+        inventorySelections: normalizeInventorySelections(inventory, state.inventorySelections),
+        inventoryRecycleNotice: [...messages, error.message || "一键种植失败"].join("\n"),
+        inventoryRecycleNoticeType: "error",
+      };
+      scheduleNextCropReadyRender(api);
+    }
+
+    render(api);
   }
 
   /**
@@ -2178,12 +3218,17 @@
 
     try {
       await requestJson(HARVEST_ALL_URL, { method: "POST" });
-      const cropsPayload = await requestJson(CROPS_URL);
+      const [crops, inventory] = await Promise.all([
+        fetchCropsData({ force: true }),
+        state.inventoryLoaded ? fetchInventoryData({ force: true }) : Promise.resolve(state.inventory),
+      ]);
 
       state = {
         ...state,
         harvesting: false,
-        crops: normalizeCrops(cropsPayload),
+        crops,
+        inventory,
+        inventorySelections: normalizeInventorySelections(inventory, state.inventorySelections),
         updatedAt: new Date().toLocaleTimeString("zh-CN", {
           hour: "2-digit",
           minute: "2-digit",
@@ -2223,12 +3268,12 @@
     };
 
     try {
-      const cropsPayload = await requestJson(CROPS_URL);
+      const crops = await fetchCropsData();
 
       state = {
         ...state,
         cropStatusLoading: false,
-        crops: normalizeCrops(cropsPayload),
+        crops,
       };
       // 静默刷新后只更新成熟提醒和必要的页面渲染，不改变当前页签。
       scheduleNextCropReadyRender(api);
@@ -2250,7 +3295,7 @@
    * @param {object} api createRoot 返回的 DOM 引用集合。
    * @returns {Promise<void>}
    */
-  async function refreshData(api) {
+  async function refreshData(api, { force = false } = {}) {
     state = {
       ...state,
       loading: true,
@@ -2259,7 +3304,7 @@
     render(api);
 
     try {
-      const nextState = await loadCurrentPageData();
+      const nextState = await loadCurrentPageData({ force });
 
       state = {
         ...state,
@@ -2291,7 +3336,22 @@
    *
    * @returns {Promise<object>} 可合并进 state 的局部状态对象。
    */
-  async function loadCurrentPageData() {
+  async function loadFarmPageData({ force = false } = {}) {
+    const cropsPromise =
+      force || state.crops.length === 0 ? fetchCropsData({ force }) : Promise.resolve(state.crops);
+    const inventoryPromise =
+      force || !state.inventoryLoaded ? fetchInventoryData({ force }) : Promise.resolve(state.inventory);
+    const [crops, inventory] = await Promise.all([cropsPromise, inventoryPromise]);
+
+    return {
+      crops,
+      inventory,
+      inventoryLoaded: true,
+      inventorySelections: normalizeInventorySelections(inventory, state.inventorySelections),
+    };
+  }
+
+  async function loadCurrentPageData({ force = false } = {}) {
     if (state.page === "friends") {
       return {
         friends: await fetchFriendStatuses(),
@@ -2299,11 +3359,7 @@
     }
 
     if (state.page === "crops") {
-      const cropsPayload = await requestJson(CROPS_URL);
-
-      return {
-        crops: normalizeCrops(cropsPayload),
-      };
+      return loadFarmPageData({ force });
     }
 
     const [seedsPayload, pricesPayload] = await Promise.all([

@@ -14,6 +14,15 @@ Tampermonkey/farm-profit-ranking.user.js
 https://cdk.hybgzs.com/*
 ```
 
+脚本元数据当前约定：
+
+```text
+@version 2.8.15
+@license MIT
+```
+
+后续只要修改脚本行为或用户可见能力，都需要同步递增 `@version`。许可证固定声明为 MIT。
+
 脚本不依赖 React/Vue 等框架，不引入远程库。界面使用原生 DOM、Shadow DOM 和内联 CSS 实现。
 
 ## 功能概览
@@ -22,13 +31,17 @@ https://cdk.hybgzs.com/*
 
 ```text
 收益排行
-成熟时间
+我的农场
 好友农场
 ```
 
 收益排行页用于判断“种什么最划算”，核心展示每小时收益。
 
-成熟时间页用于查看所有未收获地块的成熟状态，核心展示具体北京时间成熟时间。
+我的农场页用于查看自己的农场状态，核心包含“农场情况”和“我的仓库”两个折叠面板。
+
+农场情况面板使用 `/api/farm/crops` 一次性获取最大田地数量和种植数据，按 `maxSlots` 补齐空地，并以每行 6 块地展示。
+
+我的仓库面板使用 `/api/farm/inventory` 展示库存作物。默认卡片显示图标、名称、数量和回收价格；进入多选模式后卡片显示图标、名称、库存、数量输入步进器和小计，并提供一键卖出、一键种植按钮。
 
 当自己的农场存在可收获作物时，右下角悬浮按钮会从绿色切换为金黄色；收获后如果没有成熟作物，会恢复绿色。
 
@@ -41,7 +54,9 @@ https://cdk.hybgzs.com/*
 首次展开面板
 切换到当前缺少数据的页面
 点击刷新按钮
-点击成熟时间页的一键收菜按钮
+点击我的农场页的一键收菜按钮
+点击我的仓库多选状态下的一键卖出按钮
+点击我的仓库多选状态下的一键种植按钮
 点击好友农场页的偷菜按钮
 ```
 
@@ -49,7 +64,7 @@ https://cdk.hybgzs.com/*
 
 ### 通用请求约定
 
-所有接口都由 `requestJson(url, options)` 发起请求。查询类接口使用 `GET`，一键收菜和好友偷菜接口使用 `POST`。
+所有接口都由 `requestJson(url, options)` 发起请求。查询类接口使用 `GET`，一键收菜、好友偷菜、回收报价、回收卖出和批量种植接口使用 `POST`。
 
 请求实现：
 
@@ -156,6 +171,9 @@ POST 请求说明：
 ```text
 /api/farm/harvest-all 使用 POST，不需要请求体
 /api/farm/steal/friend-auto 使用 POST，需要 JSON 请求体
+/api/farm/recycle/quote 使用 POST，需要 JSON 请求体
+/api/farm/recycle 使用 POST，需要 JSON 请求体
+/api/farm/plant-batch 使用 POST，需要 JSON 请求体
 需要 JSON body 时通过 requestJson(url, { method: "POST", body: {...} }) 发送
 ```
 
@@ -342,7 +360,7 @@ const PRICE_DIVISOR = 500000;
 用途：
 
 ```text
-获取自己农场所有未收获作物的成熟时间，用于成熟时间页。
+获取自己农场的最大田地数量、种植数据和地块等级，用于我的农场页的农场情况面板和悬浮按钮成熟提醒。
 ```
 
 请求：
@@ -377,7 +395,15 @@ renderPlotCard(crop)
 响应结构：
 
 ```ts
-type CropsResponse = ApiSuccess<Crop[]>;
+type CropsResponse = {
+  success: true;
+  data?: Crop[];
+  crops?: Crop[];
+  baseSlots?: number;
+  maxSlots?: number;
+  isVip?: boolean;
+  plotLevels?: PlotLevel[];
+};
 
 type Crop = {
   id: string;
@@ -400,6 +426,12 @@ type Crop = {
   lastDelayFlushAt?: string | null;
   conditions?: string[];
 };
+
+type PlotLevel = {
+  plotIndex: number;
+  level: number;
+  theme: string;
+};
 ```
 
 脚本实际使用字段：
@@ -411,10 +443,12 @@ data[].seedId 作物 ID
 data[].seedName 作物名称
 data[].seedImage 作物图标相对路径
 data[].maturesAt UTC 成熟时间点
-data[].isHarvested 是否已收获；已收获会被过滤
+data[].isHarvested 是否已收获；已收获会作为空地处理
 data[].isMature 是否成熟
 data[].remainingTime 剩余成熟秒数
 data[].conditions 异常状态列表
+maxSlots 当前账号最大田地数量，优先作为农场情况要展示的田地总数
+plotLevels[].plotIndex 地块等级数据里的地块序号，作为 maxSlots 缺失时的兜底来源
 ```
 
 时间处理：
@@ -434,8 +468,323 @@ isMature = Boolean(crop.isMature) || remainingTime <= 0;
 排序规则：
 
 ```text
-成熟地块排最前
-未成熟地块按 remainingTime 从小到大排序
+农场情况面板最终按 plotIndex 从小到大展示，保证空地和已种植地块位置稳定
+摘要和下一块成熟逻辑使用实时成熟状态，成熟地块优先，其余按 remainingTime 从小到大排序
+maxSlots 内没有种植数据的位置会由 createEmptyPlot(plotIndex) 补成空地
+```
+
+### 我的仓库接口
+
+用途：
+
+```text
+获取自己仓库中的作物库存，用于我的农场页的我的仓库折叠面板。
+```
+
+请求：
+
+```http
+GET https://cdk.hybgzs.com/api/farm/inventory
+Accept: application/json
+Cookie: 浏览器自动携带
+```
+
+脚本调用位置：
+
+```js
+loadFarmPageData()
+fetchInventoryData()
+normalizeInventory(payload)
+renderInventoryCard(item)
+```
+
+响应结构：
+
+```ts
+type InventoryResponse = ApiSuccess<InventoryItem[]>;
+
+type InventoryItem = {
+  seedId: string;
+  seedName: string;
+  seedImage: string;
+  quantity: number;
+  recyclePrice: string;
+};
+```
+
+脚本实际使用字段：
+
+```text
+data[].seedId 作物 ID，用于多选数量、报价和回收请求
+data[].seedName 作物名称
+data[].seedImage 作物图标相对路径
+data[].quantity 当前库存数量
+data[].recyclePrice 当前回收价格显示整数
+```
+
+仓库价格处理和收益排行一致，统一使用：
+
+```js
+normalizeDisplayPrice(item.recyclePrice)
+formatUsd(value)
+```
+
+也就是：
+
+```text
+真实美元价格 = 接口价格整数 / 500000
+UI 固定展示 2 位小数，并按浏览器数字格式化四舍五入
+```
+
+UI 行为：
+
+```text
+我的仓库是我的农场页内的折叠面板，取消多选不会自动收起
+默认状态每行 6 个卡片，显示图标、名称、数量、回收价格
+多选状态每行 6 个卡片，显示图标、名称、库存、数量输入步进器、小计
+数量输入只限制单项范围：0 <= selectedQuantity <= 当前作物库存数量
+一键卖出不限制所有选中作物数量之和与田地数量的关系
+一键种植会在点击后重新校验所有选中数量之和不能大于当前空闲土地数量
+多选操作栏左侧是“多选”，右侧依次是“一键卖出”“一键种植”
+```
+
+### 农场地块容量接口
+
+用途：
+
+```text
+一键种植前获取当前总土地数量，用于计算还能种多少个作物。
+```
+
+请求：
+
+```http
+GET https://cdk.hybgzs.com/api/farm/plots
+Accept: application/json
+Cookie: 浏览器自动携带
+```
+
+响应结构：
+
+```ts
+type FarmPlotsResponse = ApiSuccess<{
+  totalSlots: number;
+  freeSlots: number;
+  unlockedSlots: number;
+  vipBonusSlots: number;
+  maxUnlockable: number;
+  unlockedPlotIndexes: number[];
+  nextUnlock?: {
+    plotIndex: number;
+    requiredLevel: number;
+    cost: string;
+    canUnlock: boolean;
+    reason?: string;
+  };
+  vipPlotStartIndex?: number;
+  vipPlotEndIndex?: number;
+  unlockedPlotLevels?: Record<string, number>;
+}>;
+```
+
+脚本实际使用字段：
+
+```text
+data.totalSlots 当前总土地数量
+data.freeSlots 仅作为 totalSlots 缺失时的兜底
+```
+
+空闲土地计算：
+
+```text
+当前已种植数量 = 最新 /api/farm/crops 归一化后 !isEmpty 的地块数量
+当前空闲土地数量 = data.totalSlots - 当前已种植数量
+```
+
+脚本不会直接信任旧的页面状态。一键种植前会并发请求 `/api/farm/plots` 和强制刷新 `/api/farm/crops`，用最新数据做最终校验。
+
+### 回收报价接口
+
+用途：
+
+```text
+在真正卖出前获取当前最新市场单价，作为回收接口的 expectedUnitPrice。
+```
+
+请求：
+
+```http
+POST https://cdk.hybgzs.com/api/farm/recycle/quote
+Accept: application/json
+Content-Type: application/json
+Cookie: 浏览器自动携带
+```
+
+请求体：
+
+```json
+{
+  "seedId": "pumpkin",
+  "quantity": 1
+}
+```
+
+响应结构：
+
+```ts
+type RecycleQuoteResponse = ApiSuccess<{
+  seedId: string;
+  quantity: number;
+  unitPrice: string;
+  totalQuota: string;
+  quotedAt: string;
+}>;
+```
+
+脚本实际使用字段：
+
+```text
+data.unitPrice 最新市场单价原始整数，直接作为回收接口 expectedUnitPrice
+```
+
+注意：`unitPrice` 在传给回收接口时保持原始字符串，不做 `/ 500000` 归一化。只有 UI 展示金额时才归一化。
+
+### 作物回收接口
+
+用途：
+
+```text
+按我的仓库多选数量卖出作物。
+```
+
+请求：
+
+```http
+POST https://cdk.hybgzs.com/api/farm/recycle
+Accept: application/json
+Content-Type: application/json
+Cookie: 浏览器自动携带
+```
+
+请求体：
+
+```json
+{
+  "seedId": "pumpkin",
+  "quantity": 1,
+  "expectedUnitPrice": "612581",
+  "maxSlippageBps": 300
+}
+```
+
+字段说明：
+
+```text
+seedId 作物 ID
+quantity 当前作物选中的卖出数量
+expectedUnitPrice 来自回收报价接口 data.unitPrice
+maxSlippageBps 固定为 300
+```
+
+响应结构：
+
+```ts
+type RecycleResponse = ApiSuccess<{
+  seedId: string;
+  quantity: number;
+  unitPrice: string;
+  totalQuota: string;
+  slippageBps: number;
+}>;
+```
+
+脚本调用位置：
+
+```js
+getSelectedInventoryItems()
+fetchRecycleQuote(seedId, quantity)
+recycleInventoryItem(item)
+formatRecycleSuccessMessage(item, recycleData)
+handleRecycleSelectedInventory(api)
+```
+
+UI 行为：
+
+```text
+一键卖出按钮在多选状态下显示在仓库操作栏右侧
+只有多选状态、选中数量大于 0、且当前没有回收请求时按钮可点击
+点击后一项一项执行：先 quote，再 recycle
+成功后强制刷新仓库，清空已选数量，保持我的仓库面板展开
+每个成功结果格式化为“卖出{quantity}个{seedName}获得{formatUsd(totalQuota / 500000)}”
+多条成功结果用换行拼接，提示条使用 white-space: pre-line 保留换行
+如果中途失败，已成功的消息会保留，并在最后追加错误信息
+```
+
+### 批量种植接口
+
+用途：
+
+```text
+按我的仓库多选数量种植作物。一次请求只能种植一种作物，选中多种作物时需要逐个 seedId 发送多次请求。
+```
+
+请求：
+
+```http
+POST https://cdk.hybgzs.com/api/farm/plant-batch
+Accept: application/json
+Content-Type: application/json
+Cookie: 浏览器自动携带
+```
+
+请求体：
+
+```json
+{
+  "seedId": "pumpkin",
+  "quantity": 1
+}
+```
+
+字段说明：
+
+```text
+seedId 作物 ID
+quantity 当前作物选中的种植数量
+```
+
+响应结构：
+
+```ts
+type PlantBatchResponse = ApiSuccess<{
+  plantedCount: number;
+  experience: number;
+  purchasedCount: number;
+  totalCost: string;
+}>;
+```
+
+脚本调用位置：
+
+```js
+fetchPlantCapacity()
+plantInventoryItem(item)
+formatPlantSuccessMessage(item, plantData)
+handlePlantSelectedInventory(api)
+```
+
+UI 行为：
+
+```text
+一键种植按钮在多选状态下显示在一键卖出按钮右侧
+只有多选状态、选中数量大于 0、且当前没有卖出/种植请求时按钮可点击
+点击后先请求 plots 和最新 crops，计算 totalSlots - 已种植数量
+如果已选总数大于当前空闲土地数量，直接显示错误，不发送 plant-batch
+如果空地足够，按选中作物逐个请求 plant-batch
+每个成功结果格式化为“种植 {quantity} 个{seedName}成功”
+多条成功结果用换行拼接，复用仓库提示区域展示
+成功后强制刷新地块和仓库，清空已选数量，保持我的仓库面板展开
+如果中途失败，已成功的消息会保留，并在最后追加错误信息
 ```
 
 ### 一键收菜接口
@@ -443,7 +792,7 @@ isMature = Boolean(crop.isMature) || remainingTime <= 0;
 用途：
 
 ```text
-收获自己农场中所有已经成熟的作物，用于成熟时间页的一键收菜按钮。
+收获自己农场中所有已经成熟的作物，用于我的农场页的一键收菜按钮。
 ```
 
 请求：
@@ -495,11 +844,11 @@ state.crops = normalizeCrops(cropsPayload);
 UI 行为：
 
 ```text
-成熟时间页 readyCount > 0 时按钮可点击
+我的农场页 readyCount > 0 时按钮可点击
 readyCount === 0 时按钮禁用
 点击后弹出二次确认
 请求期间按钮显示“收菜中”并禁用
-成功后刷新成熟时间页数据
+成功后刷新我的农场页地块数据；如果仓库已经加载，也会同步刷新仓库数据
 失败后展示错误信息
 ```
 
@@ -849,7 +1198,22 @@ success === false 会读取 error.message 展示给用户
 完整实现：
 
 ```js
-async function loadCurrentPageData() {
+async function loadFarmPageData({ force = false } = {}) {
+  const cropsPromise =
+    force || state.crops.length === 0 ? fetchCropsData({ force }) : Promise.resolve(state.crops);
+  const inventoryPromise =
+    force || !state.inventoryLoaded ? fetchInventoryData({ force }) : Promise.resolve(state.inventory);
+  const [crops, inventory] = await Promise.all([cropsPromise, inventoryPromise]);
+
+  return {
+    crops,
+    inventory,
+    inventoryLoaded: true,
+    inventorySelections: normalizeInventorySelections(inventory, state.inventorySelections),
+  };
+}
+
+async function loadCurrentPageData({ force = false } = {}) {
   if (state.page === "friends") {
     return {
       friends: await fetchFriendStatuses(),
@@ -857,11 +1221,7 @@ async function loadCurrentPageData() {
   }
 
   if (state.page === "crops") {
-    const cropsPayload = await requestJson(CROPS_URL);
-
-    return {
-      crops: normalizeCrops(cropsPayload),
-    };
+    return loadFarmPageData({ force });
   }
 
   const [seedsPayload, pricesPayload] = await Promise.all([
@@ -879,7 +1239,7 @@ async function loadCurrentPageData() {
 
 ```text
 friends 页才请求好友列表和好友详情，避免拖慢收益页
-crops 页只请求自己的地块成熟时间
+crops 页是“我的农场”，并发请求自己的地块状态和仓库数据
 profit 页并发请求种子图鉴和价格接口
 函数返回局部 state，refreshData 负责合并进全局 state
 ```
@@ -894,13 +1254,13 @@ profit 页并发请求种子图鉴和价格接口
 Map<seedId, unitPrice>
 ```
 
-`normalizeCrops(payload)` 将地块数据转换成成熟时间页面需要的数据，并过滤已收获地块：
+`normalizeCrops(payload)` 将地块数据转换成我的农场页面需要的数据。它不会猜测田地数量，优先使用接口返回的 `maxSlots`，再用 `plotLevels.length`、作物里的最大 `plotIndex + 1`、地块等级里的最大 `plotIndex + 1` 兜底。
 
-```js
-.filter((crop) => !crop.isHarvested)
-```
+接口没有返回作物的位置会用 `createEmptyPlot(plotIndex)` 补成空地，保证农场情况面板显示完整田地。
 
-成熟地块排序在最前，其余按剩余时间从短到长排序。
+`normalizeInventory(payload)` 将仓库数据转换成我的仓库面板需要的数据，并把 `recyclePrice` 归一化成真实美元价格。
+
+`normalizeInventorySelections(inventory, selections)` 会在仓库刷新后按最新库存修正多选数量，避免卖出后保留超过库存的选择值。
 
 `getLiveCrop(crop)` 会基于 `maturesAt` 和当前时间重新计算 `isMature` 与 `remainingTime`，避免地块数据加载后停留一段时间导致成熟状态不更新。
 
@@ -1035,7 +1395,8 @@ isMature = Boolean(crop.isMature) || remainingTime <= 0
 成熟地块展示效果：
 
 ```text
-排在成熟时间列表最前
+在摘要和下一块成熟逻辑中排在已种植地块前面
+农场情况面板仍按 plotIndex 展示，避免地块位置跳动
 卡片添加 ready class
 浅绿色背景
 绿色边框
@@ -1054,31 +1415,90 @@ function normalizeCrops(payload) {
       ? payload.data.crops
       : [];
 
-  return crops
-    .filter((crop) => !crop.isHarvested)
+  const normalizedCrops = crops
     .map((crop) => {
-      const remainingTime = Math.max(0, Number(crop.remainingTime || 0));
-      const maturesAt = crop.maturesAt ? new Date(crop.maturesAt) : null;
+      const isEmpty = Boolean(crop.isHarvested);
+      const remainingTime = isEmpty ? Number.POSITIVE_INFINITY : Math.max(0, Number(crop.remainingTime || 0));
+      const maturesAt = !isEmpty && crop.maturesAt ? new Date(crop.maturesAt) : null;
 
       return {
         id: crop.id,
         plotIndex: Number(crop.plotIndex),
         seedId: crop.seedId,
-        seedName: crop.seedName || crop.seedId || "未知作物",
-        iconUrl: buildCropIconUrl(crop.seedImage),
+        seedName: isEmpty ? "空地" : crop.seedName || crop.seedId || "未知作物",
+        iconUrl: isEmpty ? "" : buildCropIconUrl(crop.seedImage),
         maturesAt,
-        isMature: Boolean(crop.isMature) || remainingTime <= 0,
+        isMature: !isEmpty && (Boolean(crop.isMature) || remainingTime <= 0),
         remainingTime,
+        isEmpty,
         conditions: Array.isArray(crop.conditions) ? crop.conditions : [],
       };
     })
     .sort((a, b) => {
+      if (a.isEmpty !== b.isEmpty) {
+        return a.isEmpty ? 1 : -1;
+      }
+
       if (a.isMature !== b.isMature) {
         return a.isMature ? -1 : 1;
       }
 
-      return a.remainingTime - b.remainingTime;
+      if (a.remainingTime !== b.remainingTime) {
+        return a.remainingTime - b.remainingTime;
+      }
+
+      return a.plotIndex - b.plotIndex;
     });
+
+  const maxPlotIndexFromCrops = normalizedCrops.reduce((maxIndex, crop) => {
+    return Number.isFinite(crop.plotIndex) ? Math.max(maxIndex, crop.plotIndex) : maxIndex;
+  }, -1);
+  const plotLevels = Array.isArray(payload?.plotLevels) ? payload.plotLevels : [];
+  const maxPlotIndexFromLevels = plotLevels.reduce((maxIndex, plot) => {
+    const plotIndex = Number(plot?.plotIndex);
+    return Number.isFinite(plotIndex) ? Math.max(maxIndex, plotIndex) : maxIndex;
+  }, -1);
+  const maxSlots = Number(payload?.maxSlots);
+  const plotCount = Math.max(
+    Number.isFinite(maxSlots) ? maxSlots : 0,
+    plotLevels.length,
+    maxPlotIndexFromCrops + 1,
+    maxPlotIndexFromLevels + 1,
+  );
+  const cropsByPlotIndex = new Map();
+
+  for (const crop of normalizedCrops) {
+    if (!Number.isFinite(crop.plotIndex)) {
+      continue;
+    }
+
+    const existingCrop = cropsByPlotIndex.get(crop.plotIndex);
+    if (!existingCrop || (existingCrop.isEmpty && !crop.isEmpty)) {
+      cropsByPlotIndex.set(crop.plotIndex, crop);
+    }
+  }
+
+  for (let plotIndex = 0; plotIndex < plotCount; plotIndex += 1) {
+    if (!cropsByPlotIndex.has(plotIndex)) {
+      cropsByPlotIndex.set(plotIndex, createEmptyPlot(plotIndex));
+    }
+  }
+
+  return Array.from(cropsByPlotIndex.values()).sort((a, b) => {
+    if (a.isEmpty !== b.isEmpty) {
+      return a.isEmpty ? 1 : -1;
+    }
+
+    if (a.isMature !== b.isMature) {
+      return a.isMature ? -1 : 1;
+    }
+
+    if (a.remainingTime !== b.remainingTime) {
+      return a.remainingTime - b.remainingTime;
+    }
+
+    return a.plotIndex - b.plotIndex;
+  });
 }
 ```
 
@@ -1086,11 +1506,13 @@ function normalizeCrops(payload) {
 
 ```text
 接口目前 data 是数组，但兼容 data.crops 数组结构
-已收获地块不展示
-remainingTime 做 Math.max(0, ...) 避免负数影响 UI
+maxSlots 是田地总数的首选来源；缺失时才使用 plotLevels 和 plotIndex 兜底
+接口没有返回作物的位置会补 createEmptyPlot(plotIndex)，空地必须显示
+已收获记录会作为空地处理，不再直接过滤掉
+remainingTime 做 Math.max(0, ...) 避免负数影响 UI；空地使用 Infinity 排到最后
 maturesAt 转成 Date，渲染时再格式化为北京时间
 isMature 用 remainingTime <= 0 兜底
-成熟地块排最前，未成熟地块按剩余时间排序
+农场情况渲染前会再按 plotIndex 排序，保证每块地固定显示在自己的位置
 ```
 
 ## 好友偷菜判断
@@ -1183,12 +1605,28 @@ Shadow DOM 的作用：
 .trigger 右下角悬浮按钮
 .trigger.has-ready-crops 自己农场存在可收获作物时的金黄色悬浮按钮状态
 .panel 展开面板
-.header 标题、更新时间、主题切换、刷新、关闭
+.header 标题、更新时间、主题切换、刷新、关闭；顶部标题固定显示“黑与白农场小助手”
 .theme-toggle 标题栏主题切换按钮，浅色时显示 🌙，暗色时显示 ☀️
-.tabs 收益排行 / 成熟时间 / 好友农场
+.tabs 收益排行 / 我的农场 / 好友农场
 .filters 收益页专用的 全部 / 普通 / VIP 筛选
 .body 当前页面内容
 ```
+
+面板初始结构中，悬浮按钮和面板都使用同一名称做无障碍标签：
+
+```html
+<button class="trigger" type="button" title="黑与白农场小助手" aria-label="打开黑与白农场小助手">$</button>
+<section class="panel hidden" aria-label="黑与白农场小助手">
+  <div class="header">
+    <div class="title">
+      <strong>黑与白农场小助手</strong>
+      <span class="status">等待加载</span>
+    </div>
+  </div>
+</section>
+```
+
+如果悬浮按钮变为可收获提醒状态，`title` 会临时改为“有作物可以收获”，但 `aria-label` 仍保留“打开黑与白农场小助手”作为入口名称。
 
 `filters` 只在收益排行页显示：
 
@@ -1242,6 +1680,16 @@ display: none !important;
   theme: getInitialTheme(),
   rows: [],
   crops: [],
+  farmStatusPanelOpen: false,
+  inventory: [],
+  inventoryLoaded: false,
+  inventoryPanelOpen: false,
+  inventorySelectMode: false,
+  inventorySelections: {},
+  inventoryRecycling: false,
+  inventoryPlanting: false,
+  inventoryRecycleNotice: "",
+  inventoryRecycleNoticeType: "",
   friends: [],
   error: "",
   updatedAt: ""
@@ -1263,7 +1711,17 @@ page 当前页签，profit / crops / friends
 vipMode 收益排行筛选，all / normal / vip
 theme 当前 UI 主题，light / dark；初始值来自 localStorage
 rows 收益排行数据
-crops 地块成熟时间数据
+crops 我的农场地块数据，包含已种植地块和补齐后的空地
+farmStatusPanelOpen 农场情况折叠面板是否展开；切换主题等重渲染不能重置这个状态
+inventory 我的仓库作物库存数据
+inventoryLoaded 仓库数据是否已加载
+inventoryPanelOpen 我的仓库折叠面板是否展开
+inventorySelectMode 我的仓库是否处于多选模式
+inventorySelections 仓库多选数量，键为 seedId，值为选择数量
+inventoryRecycling 是否正在执行一键卖出
+inventoryPlanting 是否正在执行一键种植
+inventoryRecycleNotice 我的仓库一键卖出或一键种植成功/失败提示文案，支持换行
+inventoryRecycleNoticeType 仓库操作提示类型，success / error
 friends 好友农场状态数据
 error 当前错误信息
 updatedAt 最近一次成功更新时间
@@ -1297,7 +1755,7 @@ renderProfitPage(api);
 
 `renderProfitPage(api)` 渲染收益排行页。
 
-`renderCropsPage(api)` 渲染成熟时间页。
+`renderCropsPage(api)` 渲染我的农场页，包括顶部摘要、农场情况面板和我的仓库面板。
 
 `renderFriendsPage(api)` 渲染好友农场页。
 
@@ -1305,9 +1763,15 @@ renderProfitPage(api);
 
 `renderPlotCard(crop)` 渲染单个地块卡片。
 
+`renderInventoryCard(item)` 渲染单个仓库作物卡片，按 `inventorySelectMode` 切换默认视图和多选视图。
+
 `renderFriendBar(friend)` 渲染单个好友农场状态条。
 
 `handleHarvestAll(api)` 执行一键收菜操作。
+
+`handleRecycleSelectedInventory(api)` 执行我的仓库多选一键卖出操作。
+
+`handlePlantSelectedInventory(api)` 执行我的仓库多选一键种植操作。
 
 `handleStealFriend(api, friendId)` 执行好友偷菜操作。
 
@@ -1332,8 +1796,8 @@ function render(api) {
   api.panel.classList.toggle("hidden", !state.expanded);
   api.trigger.textContent = state.expanded ? "×" : "$";
   api.trigger.classList.toggle("has-ready-crops", readyCrops);
-  api.trigger.title = readyCrops ? "有作物可以收获" : "作物收益排行榜";
-  api.trigger.setAttribute("aria-label", readyCrops ? "打开作物收益排行榜，有作物可以收获" : "打开作物收益排行榜");
+  api.trigger.title = readyCrops ? "有作物可以收获" : "黑与白农场小助手";
+  api.trigger.setAttribute("aria-label", readyCrops ? "打开黑与白农场小助手，有作物可以收获" : "打开黑与白农场小助手");
   api.themeToggle.textContent = isDarkTheme ? "☀️" : "🌙";
   api.themeToggle.title = isDarkTheme ? "切换浅色主题" : "切换暗色主题";
   api.themeToggle.setAttribute("aria-label", isDarkTheme ? "切换浅色主题" : "切换暗色主题");
@@ -1394,7 +1858,7 @@ loading 且当前页缺数据时展示加载占位
 
 ### 操作按钮事件
 
-成熟时间页的 `一键收菜` 按钮和好友农场页的 `偷菜` 按钮都通过事件委托绑定在 `.body` 上。这样页面重渲染后，不需要重新查询按钮再绑定事件。
+我的农场页的 `一键收菜`、仓库多选步进器、仓库 `一键卖出`、仓库 `一键种植` 和好友农场页的 `偷菜` 按钮都通过事件委托绑定在 `.body` 上。这样页面重渲染后，不需要重新查询按钮再绑定事件。
 
 事件绑定：
 
@@ -1422,8 +1886,57 @@ api.body.addEventListener("click", (event) => {
 
   if (button.dataset.action === "steal-friend" && !button.disabled) {
     handleStealFriend(api, button.dataset.friendId);
+    return;
+  }
+
+  if (button.dataset.action === "inventory-step" && !button.disabled) {
+    stepInventorySelection(api, button.dataset.seedId, Number(button.dataset.delta) || 0);
+    return;
+  }
+
+  if (button.dataset.action === "inventory-recycle-selected" && !button.disabled) {
+    handleRecycleSelectedInventory(api);
+    return;
+  }
+
+  if (button.dataset.action === "inventory-plant-selected" && !button.disabled) {
+    handlePlantSelectedInventory(api);
   }
 });
+
+api.body.addEventListener("change", (event) => {
+  if (!(event.target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  if (event.target.matches(".inventory-select-input")) {
+    setInventorySelection(api, event.target.dataset.seedId, event.target.value);
+    return;
+  }
+
+  if (event.target.matches(".inventory-select-checkbox")) {
+    setInventorySelectMode(api, event.target.checked);
+  }
+});
+
+api.body.addEventListener(
+  "toggle",
+  (event) => {
+    if (!(event.target instanceof HTMLDetailsElement)) {
+      return;
+    }
+
+    if (event.target.dataset.panel === "farm-status") {
+      state.farmStatusPanelOpen = event.target.open;
+      return;
+    }
+
+    if (event.target.dataset.panel === "inventory") {
+      state.inventoryPanelOpen = event.target.open;
+    }
+  },
+  true,
+);
 ```
 
 `.theme-toggle` 是固定标题栏按钮，不随 `.body` 内容重渲染，因此直接绑定 click 事件。切换时只更新 `state.theme`、保存到 `localStorage`，然后交给 `render(api)` 同步 `theme-dark` 类和 🌙 / ☀️ 图标。
@@ -1438,7 +1951,7 @@ async function handleHarvestAll(api) {
     return;
   }
 
-  const readyCount = state.crops.filter((crop) => crop.isMature).length;
+  const readyCount = getLiveCrops().filter((crop) => crop.isMature).length;
   if (readyCount === 0) {
     return;
   }
@@ -1457,18 +1970,24 @@ async function handleHarvestAll(api) {
 
   try {
     await requestJson(HARVEST_ALL_URL, { method: "POST" });
-    const cropsPayload = await requestJson(CROPS_URL);
+    const [crops, inventory] = await Promise.all([
+      fetchCropsData({ force: true }),
+      state.inventoryLoaded ? fetchInventoryData({ force: true }) : Promise.resolve(state.inventory),
+    ]);
 
     state = {
       ...state,
       harvesting: false,
-      crops: normalizeCrops(cropsPayload),
+      crops,
+      inventory,
+      inventorySelections: normalizeInventorySelections(inventory, state.inventorySelections),
       updatedAt: new Date().toLocaleTimeString("zh-CN", {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
       }),
     };
+    scheduleNextCropReadyRender(api);
   } catch (error) {
     state = {
       ...state,
@@ -1485,10 +2004,122 @@ async function handleHarvestAll(api) {
 
 ```text
 state.harvesting 防止重复点击
+readyCount 使用 getLiveCrops() 计算，避免地块到点后旧 remainingTime 还没刷新导致按钮不可用
 readyCount === 0 时直接返回，按钮本身也会禁用
 window.confirm 是二次确认，避免误触改变农场状态
-POST 成功后只刷新 CROPS_URL，不重新请求收益排行或好友详情
+POST 成功后刷新 CROPS_URL；如果仓库已加载，也刷新 INVENTORY_URL
+成功后重新安排下一块成熟提醒
 失败时设置 state.error，由 render(api) 统一展示错误
+```
+
+### 仓库一键卖出实现
+
+仓库一键卖出只在我的仓库多选状态下可用。多选数量来自 `state.inventorySelections`，每个作物只限制在 `0` 到该作物当前库存数量之间。
+
+核心流程：
+
+```js
+async function recycleInventoryItem(item) {
+  const quote = await fetchRecycleQuote(item.seedId, item.selectedQuantity);
+  const payload = await requestJson(RECYCLE_URL, {
+    method: "POST",
+    body: {
+      seedId: item.seedId,
+      quantity: item.selectedQuantity,
+      expectedUnitPrice: String(quote.unitPrice),
+      maxSlippageBps: RECYCLE_MAX_SLIPPAGE_BPS,
+    },
+  });
+
+  return payload?.data || {};
+}
+```
+
+`handleRecycleSelectedInventory(api)` 会按选中作物顺序逐项执行：
+
+```text
+1. getSelectedInventoryItems() 取出 selectedQuantity > 0 的仓库作物
+2. fetchRecycleQuote(seedId, quantity) 获取最新 unitPrice
+3. recycleInventoryItem(item) 使用 unitPrice 作为 expectedUnitPrice 发起回收
+4. formatRecycleSuccessMessage(item, recycleData) 格式化每条成功消息
+5. 成功后强制刷新仓库、清空 selections、保持仓库面板展开
+```
+
+金额展示：
+
+```js
+const totalPrice = normalizeDisplayPrice(recycleData.totalQuota);
+formatUsd(totalPrice);
+```
+
+失败处理：
+
+```text
+已成功卖出的作物消息会保留
+最后追加接口错误消息或“一键卖出失败”
+卖出失败后仍尽量刷新仓库，并按最新库存修正已选数量
+```
+
+### 仓库一键种植实现
+
+仓库一键种植和一键卖出共用多选数量，但种植前会额外校验空闲土地数量。这个限制只作用于种植动作，不会限制一键卖出的选择数量。
+
+空地校验：
+
+```js
+async function fetchPlantCapacity() {
+  const [plotsPayload, crops] = await Promise.all([
+    requestJson(PLOTS_URL),
+    fetchCropsData({ force: true }),
+  ]);
+  const totalSlots = Number(plotsPayload?.data?.totalSlots ?? plotsPayload?.totalSlots);
+  const plantedCount = crops.filter((crop) => !crop.isEmpty).length;
+  const freeSlots = Math.max(0, totalSlots - plantedCount);
+
+  return { crops, freeSlots, plantedCount, totalSlots };
+}
+```
+
+核心流程：
+
+```js
+async function plantInventoryItem(item) {
+  const payload = await requestJson(PLANT_BATCH_URL, {
+    method: "POST",
+    body: {
+      seedId: item.seedId,
+      quantity: item.selectedQuantity,
+    },
+  });
+
+  return payload?.data || {};
+}
+```
+
+`handlePlantSelectedInventory(api)` 会按以下顺序执行：
+
+```text
+1. getSelectedInventoryItems() 取出 selectedQuantity > 0 的仓库作物
+2. 求和得到 selectedQuantity 总数
+3. fetchPlantCapacity() 获取最新 totalSlots 和已种植数量，计算 freeSlots
+4. 如果 selectedQuantity > freeSlots，显示“空闲土地不足”错误，不发送 plant-batch
+5. 空地足够时，按选中作物顺序逐项请求 plant-batch
+6. formatPlantSuccessMessage(item, plantData) 格式化每条成功消息
+7. 成功后强制刷新地块和仓库、清空 selections、保持仓库面板展开
+```
+
+提示文案：
+
+```text
+种植 2 个杨桃成功
+```
+
+失败处理：
+
+```text
+已成功种植的作物消息会保留
+最后追加接口错误消息或“一键种植失败”
+种植失败后仍尽量刷新地块和仓库，并按最新库存修正已选数量
 ```
 
 ### 好友偷菜实现
@@ -1609,7 +2240,7 @@ stealCooldownUntil 提供 5 秒全局冷却，避免接口短时间重复访问
 friend.isStealable 是接口调用前的成熟状态门槛
 POST 请求体只传 { friendId }
 成功响应优先展示 “好友名农场：message”，缺少 message 时按 stolenCrops 汇总数量
-成功后刷新好友状态，不影响收益排行页和成熟时间页数据
+成功后刷新好友状态，不影响收益排行页和我的农场页数据
 成功后的好友状态刷新失败时保留成功提示，不覆盖为刷新错误
 success === false 属于业务失败，会展示 “好友名农场 + error.message”，并尽量刷新好友状态
 失败时设置 stealNotice，由好友页内提示展示完整错误消息，不清空列表
@@ -1627,8 +2258,10 @@ success === false 属于业务失败，会展示 “好友名农场 + error.mess
 主面板数据请求只在展开、切页缺数据、手动刷新时触发
 脚本启动时会额外静默请求一次自己的地块状态，用于悬浮按钮成熟提醒
 不用 setInterval 轮询；下一块地成熟只安排一次定时 render
-按当前页签请求所需接口，好友详情不会拖慢收益页和成熟时间页
-一键收菜成功后只刷新当前地块接口
+按当前页签请求所需接口，好友详情不会拖慢收益页和我的农场页
+一键收菜成功后刷新当前地块接口；仓库已加载时同步刷新仓库接口
+一键卖出成功或失败后只刷新仓库接口，不重新请求收益排行或好友详情
+一键种植会先请求 plots 和最新地块数据校验空地数量，成功或失败后只刷新地块和仓库
 好友偷菜成功后只刷新好友列表和好友详情
 图标使用小规格 _s4.png
 图片 lazy loading + async decoding
@@ -1641,6 +2274,8 @@ success === false 属于业务失败，会展示 “好友名农场 + error.mess
 
 ```js
 PRICE_DIVISOR
+normalizeDisplayPrice()
+formatUsd()
 normalizePrices()
 buildRanking()
 ```
@@ -1653,10 +2288,11 @@ renderProfitPage()
 renderCropCard()
 ```
 
-如果要改成熟时间展示，优先看：
+如果要改我的农场地块展示，优先看：
 
 ```js
 normalizeCrops()
+createEmptyPlot()
 getLiveCrop()
 getLiveCrops()
 hasReadyCrops()
@@ -1666,6 +2302,43 @@ formatCountdown()
 formatDateTime()
 renderCropsPage()
 renderPlotCard()
+```
+
+如果要改我的仓库展示或多选数量，优先看：
+
+```js
+INVENTORY_URL
+fetchInventoryData()
+normalizeInventory()
+normalizeInventorySelections()
+renderInventoryCard()
+setInventorySelectMode()
+setInventorySelection()
+stepInventorySelection()
+```
+
+如果要改一键卖出，优先看：
+
+```js
+RECYCLE_QUOTE_URL
+RECYCLE_URL
+RECYCLE_MAX_SLIPPAGE_BPS
+getSelectedInventoryItems()
+fetchRecycleQuote()
+recycleInventoryItem()
+formatRecycleSuccessMessage()
+handleRecycleSelectedInventory()
+```
+
+如果要改一键种植，优先看：
+
+```js
+PLOTS_URL
+PLANT_BATCH_URL
+fetchPlantCapacity()
+plantInventoryItem()
+formatPlantSuccessMessage()
+handlePlantSelectedInventory()
 ```
 
 如果要改一键收菜，优先看：
@@ -1708,22 +2381,35 @@ node --check .\Tampermonkey\farm-profit-ranking.user.js
 1. 在 Tampermonkey 中安装或更新 farm-profit-ranking.user.js
 2. 打开 https://cdk.hybgzs.com/
 3. 点击右下角 $ 按钮
-4. 检查收益排行页是否显示作物图标、收益和进度条
-5. 切到成熟时间页，确认 普通/VIP 筛选隐藏
-6. 检查成熟地块是否显示可收获绿色样式
-7. 有成熟地块时确认右下角悬浮按钮为金黄色；没有成熟地块时为绿色
-8. 有成熟地块时检查一键收菜按钮可点击；没有成熟地块时按钮禁用
-9. 点击一键收菜时应先出现确认弹窗
-10. 一键收菜成功后，如果没有成熟地块，确认右下角悬浮按钮恢复绿色
-11. 切到好友农场页，确认好友头像、名字、状态和成熟时间显示
-12. 如果好友第一块地已成熟，确认该好友显示可偷菜状态并排在前面
-13. 确认每个好友都有“访问农场”和“偷菜”两个按钮
-14. 点击访问农场，确认新标签页打开 /entertainment/farm/friends/{id}
-15. 未成熟好友的偷菜按钮应禁用
-16. 成熟好友的偷菜按钮可点击，请求期间显示“偷菜中”
-17. 偷菜成功后好友农场页应刷新，数据更新时间变化
-18. 点击刷新，确认数据更新时间变化
-19. 点击标题栏 🌙 按钮，确认面板切换到暗色主题并且按钮变为 ☀️
-20. 点击 ☀️ 按钮，确认面板切回浅色主题并且按钮变为 🌙
-21. 切到暗色主题后刷新页面，确认脚本仍保持暗色主题
+4. 确认面板最顶部标题显示“黑与白农场小助手”
+5. 检查收益排行页是否显示作物图标、收益和进度条
+6. 切到我的农场页，确认 普通/VIP 筛选隐藏
+7. 展开农场情况，确认田地按每行 6 块展示，并且空地正常显示
+8. 农场情况保持展开时切换主题，确认农场情况不会自动折叠
+9. 确认农场情况田地数量来自接口 maxSlots，不因为当前只种了少量作物而缺格子
+10. 检查成熟地块是否显示可收获绿色样式
+11. 有成熟地块时确认右下角悬浮按钮为金黄色；没有成熟地块时为绿色
+12. 有成熟地块时检查一键收菜按钮可点击；没有成熟地块时按钮禁用
+13. 点击一键收菜时应先出现确认弹窗
+14. 一键收菜成功后，如果没有成熟地块，确认右下角悬浮按钮恢复绿色
+15. 展开我的仓库，确认默认卡片显示图标、名称、数量和回收价格
+16. 勾选多选，确认卡片切换为图标、名称、库存、数量输入和小计
+17. 确认数量输入框可输入，且不能小于 0 或大于当前作物库存
+18. 确认多选取消后我的仓库仍保持展开，并恢复默认卡片显示
+19. 在多选状态选择数量后，确认一键卖出按钮可点击；未选择数量时按钮禁用
+20. 点击一键卖出后，确认成功提示按行展示“卖出N个作物获得$X.XX”，并刷新仓库库存
+21. 在多选状态选择数量后，确认一键种植按钮显示在一键卖出右侧
+22. 选择数量不超过空地时点击一键种植，确认提示按行展示“种植 N 个作物成功”，并刷新农场情况和仓库库存
+23. 选择数量超过空地时点击一键种植，确认显示“空闲土地不足”错误，不应发起种植
+24. 切到好友农场页，确认好友头像、名字、状态和成熟时间显示
+25. 如果好友第一块地已成熟，确认该好友显示可偷菜状态并排在前面
+26. 确认每个好友都有“访问农场”和“偷菜”两个按钮
+27. 点击访问农场，确认新标签页打开 /entertainment/farm/friends/{id}
+28. 未成熟好友的偷菜按钮应禁用
+29. 成熟好友的偷菜按钮可点击，请求期间显示“偷菜中”
+30. 偷菜成功后好友农场页应刷新，数据更新时间变化
+31. 点击刷新，确认数据更新时间变化
+32. 点击标题栏 🌙 按钮，确认面板切换到暗色主题并且按钮变为 ☀️
+33. 点击 ☀️ 按钮，确认面板切回浅色主题并且按钮变为 🌙
+34. 切到暗色主题后刷新页面，确认脚本仍保持暗色主题
 ```

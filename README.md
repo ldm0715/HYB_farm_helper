@@ -1,4 +1,4 @@
-# HYB Farm 作物收益排行榜
+# HYB Farm 黑与白农场小助手
 
 <div align="center">
 <img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/logo.png" width="10%">
@@ -19,13 +19,13 @@
 </div>
 
 
-一个用于黑与白农场页面的 Tampermonkey 用户脚本。脚本会在页面右下角提供一个轻量面板，用于查看作物收益排行、自己农场地块成熟时间，以及好友农场偷菜状态。
+一个用于黑与白农场页面的 Tampermonkey 用户脚本。脚本会在页面右下角提供一个轻量面板，用于查看作物收益排行、自己的农场情况、仓库库存和好友农场偷菜状态。
 
 ## 项目简介
 
 本项目主要包含两部分：
 
-- Tampermonkey 用户脚本：直接在网页内展示收益排行、成熟时间和好友农场状态。
+- Tampermonkey 用户脚本：直接在网页内展示收益排行、我的农场、我的仓库和好友农场状态。
 - Node CLI 辅助脚本：在命令行中根据接口数据输出作物收益排行榜。
 
 用户脚本不依赖 React/Vue 等前端框架，不引入远程库。界面使用原生 DOM、Shadow DOM 和内联 CSS 实现。
@@ -33,9 +33,12 @@
 ## 主要功能
 
 - 作物图标、成熟周期、产量、实时单价、单次收益、每小时收益展示
-- 自己农场未收获地块成熟时间展示
+- 我的农场页展示农场情况，按接口返回的田地数量补齐空地
+- 我的仓库展示库存、回收价格，并支持多选数量
 - 有成熟作物时右下角悬浮按钮变为金黄色提醒
-- 成熟时间页支持一键收菜，并在操作前二次确认
+- 我的农场页支持一键收菜，并在操作前二次确认
+- 我的仓库多选后支持一键卖出，卖出前会先获取最新回收报价
+- 我的仓库多选后支持一键种植，种植前会校验空闲土地数量
 - 好友农场访问链接和偷菜按钮
 - 浅色 / 暗色主题切换，主题选择会持久化
 
@@ -77,22 +80,32 @@ CLI 脚本位于：`script/crop-profit-ranking.js`
 npm install
 node script/crop-profit-ranking.js
 ```
+<div align="center">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/console.png" width="65%">
+</div>
+
 
 ## 界面展示
 
-农场面板（亮色）：
+作物实时价格面板（亮色）：
 
 <div align="center">
-<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm.png" width="65%">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/crops.png" width="65%">
 </div>
 
-农场面板（暗色）：
+作物实时价格面板（暗色）：
 
 <div align="center">
-<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm_dark.png" width="65%">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/crops_dark.png" width="65%">
 </div>
 
-好友农场面板：
+好友农场面板（亮色）：
+
+<div align="center">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/friends_farm.png" width="65%">
+</div>
+
+好友农场面板（暗色）：
 
 <div align="center">
 <img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/friends_farm.png" width="65%">
@@ -102,6 +115,12 @@ node script/crop-profit-ranking.js
 
 <div align="center">
 <img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/farm.png" width="65%">
+</div>
+
+我的仓库面板
+
+<div align="center">
+<img alt="index" src="https://github.com/ldm0715/HYB_farm_helper/blob/main/static/warehouse.png" width="65%">
 </div>
 
 ## 目录结构
@@ -129,7 +148,12 @@ hyubai_farm/
 - 种子图鉴：获取作物静态配置
 - 回收价格：获取实时回收价格和趋势信息
 - 当前地块：获取自己农场未收获作物成熟状态
+- 农场地块容量：获取当前总土地数量，用于一键种植前校验空地
+- 我的仓库：获取库存作物、数量和回收价格
 - 一键收菜：收获自己农场中已成熟作物
+- 回收报价：卖出前获取最新市场单价
+- 作物回收：按仓库多选数量卖出作物
+- 批量种植：按仓库多选数量种植作物
 - 好友列表：获取可查看偷菜状态的好友
 - 好友农场详情：查看好友第一块地成熟状态
 - 好友偷菜：对指定好友执行偷菜
@@ -147,10 +171,14 @@ node --check Tampermonkey/farm-profit-ranking.user.js
 浏览器验证重点：
 
 - 面板能通过右下角 `$` 按钮展开和收起
+- 面板顶部标题显示“黑与白农场小助手”
 - 收益排行页能展示作物图标、收益数据和进度条
-- 成熟时间页能展示地块状态，成熟作物显示可收获样式
+- 我的农场页能展示农场情况，空地不会缺失，成熟作物显示可收获样式
 - 有成熟作物时悬浮按钮变为金黄色
 - 一键收菜按钮在无成熟作物时禁用，有成熟作物时可点击并弹出确认
+- 我的仓库能展示库存，进入多选后可调整数量
+- 一键卖出会展示按行拼接的卖出结果，并刷新仓库
+- 一键种植会校验空闲土地数量，成功后刷新农场情况和仓库
 - 好友农场页能展示好友状态、访问农场按钮和偷菜按钮
 - 主题按钮能在 `🌙` / `☀️` 间切换，并在刷新后保留选择
 
