@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Farm Helper
 // @namespace    https://cdk.hybgzs.com/
-// @version      3.2.8
+// @version      3.2.9
 // @description  轻量展示最划算的作物收益排行、全部地块成熟时间和好友农场状态。
 // @author       gcnanmu
 // @license      MIT
@@ -49,6 +49,8 @@
   const AUTO_CARE_POLL_MS = 300000;
   const AUTO_CARE_MIN_INTERVAL_MS = 30000;
   const AUTO_CARE_DAILY_STORAGE_KEY = "hyb-farm-profit-auto-care-daily";
+  const FRIENDS_PAGE_SIZE = 5;
+  const FRIEND_DETAIL_CACHE_MS = 30000;
 
   /**
    * 将接口返回的作物图片相对路径转换为可直接展示的小图 URL。
@@ -121,6 +123,11 @@
     careNotice: "",
     careNoticeType: "",
     friends: [],
+    friendPage: 1,
+    friendTotal: 0,
+    friendTotalPages: 1,
+    friendFromCache: false,
+    friendDetailCache: {},
     error: "",
     updatedAt: "",
     autoHarvestEnabled: getInitialAutoHarvest(),
@@ -283,13 +290,20 @@
    * @param {object|string|null} [options.body] 请求体；对象会被 JSON.stringify。
    * @returns {Promise<object>} 解析后的 JSON 对象。
    */
-  function requestJson(url, options = {}) {
-    const method = options.method || "GET";
-    const hasBody = options.body !== undefined && options.body !== null;
-    const data =
-      hasBody && typeof options.body === "object"
-        ? JSON.stringify(options.body)
-        : options.body;
+  /** 记录同 URL 的 GET 请求 in-flight Promise，并发重复请求复用同一结果。 */
+  const inflightGetRequests = new Map();
+
+  /**
+   * 执行实际的 GM_xmlhttpRequest 并解析 JSON 响应。
+   *
+   * @param {object} config 请求配置。
+   * @param {string} config.method HTTP 请求方法。
+   * @param {string} config.url 请求地址。
+   * @param {object|string|null} [config.data] 请求体；对象会被 JSON.stringify。
+   * @returns {Promise<object>} 解析后的 JSON 对象。
+   */
+  function performRequest({ method, url, data }) {
+    const hasBody = data !== undefined && data !== null;
 
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
@@ -332,6 +346,35 @@
         },
       });
     });
+  }
+
+  function requestJson(url, options = {}) {
+    const method = options.method || "GET";
+    const hasBody = options.body !== undefined && options.body !== null;
+    const data =
+      hasBody && typeof options.body === "object"
+        ? JSON.stringify(options.body)
+        : options.body;
+
+    // 幂等 GET 并发去重：同一 URL 已有请求在途时直接复用，避免多触发源叠加请求。
+    if (method === "GET" && !hasBody) {
+      const key = `GET ${url}`;
+      const inflight = inflightGetRequests.get(key);
+      if (inflight) {
+        return inflight;
+      }
+
+      const promise = performRequest({ method, url, data });
+      inflightGetRequests.set(key, promise);
+      promise.finally(() => {
+        if (inflightGetRequests.get(key) === promise) {
+          inflightGetRequests.delete(key);
+        }
+      });
+      return promise;
+    }
+
+    return performRequest({ method, url, data });
   }
 
   /**
@@ -988,29 +1031,81 @@
   }
 
   /**
-   * 拉取好友列表，并并发获取每个好友的农场详情。
+   * 拉取好友列表，分页获取当前页好友的农场详情。
    *
-   * @returns {Promise<Array<object>>} 按可偷菜优先、成熟时间升序排序的好友农场状态。
+   * 好友列表接口始终重新拉取，返回全部好友基础信息；详情只并发拉当前页的好友，
+   * 命中 `friendDetailCache` 的 30s 缓存则复用，避免 N+1 并发风暴。
+   *
+   * @param {object} [options] 请求选项。
+   * @param {boolean} [options.forceDetails=false] 是否绕过详情缓存强制重拉。
+   * @returns {Promise<object>} 分页后的好友状态及分页元信息。
    */
-  async function fetchFriendStatuses() {
+  async function fetchFriendStatuses({ forceDetails = false } = {}) {
     const friendsPayload = await requestJson(FRIENDS_STEALABLE_URL);
     const friends = normalizeFriendList(friendsPayload);
-    const statuses = await Promise.all(
-      friends.map(async (friend) => {
-        const detailPayload = await requestJson(buildFriendFarmUrl(friend.id));
-        return normalizeFriendFarm(friend, detailPayload);
+    const totalPages = Math.max(1, Math.ceil(friends.length / FRIENDS_PAGE_SIZE));
+    const page = Math.min(state.friendPage, totalPages);
+    const pageFriends = friends.slice((page - 1) * FRIENDS_PAGE_SIZE, page * FRIENDS_PAGE_SIZE);
+    const { statuses, fromCache } = await fetchFriendDetails(pageFriends, { force: forceDetails });
+
+    return {
+      statuses: statuses.sort((a, b) => {
+        if (a.isStealable !== b.isStealable) {
+          return a.isStealable ? -1 : 1;
+        }
+
+        const aTime = a.firstCrop?.maturesAt?.getTime?.() || Number.POSITIVE_INFINITY;
+        const bTime = b.firstCrop?.maturesAt?.getTime?.() || Number.POSITIVE_INFINITY;
+        return aTime - bTime;
       }),
+      total: friends.length,
+      totalPages,
+      page,
+      fromCache,
+    };
+  }
+
+  /**
+   * 并发获取当前页好友详情，最多 3 个同时进行；命中缓存时直接复用。
+   *
+   * @param {Array<object>} friends 当前页好友基础信息列表。
+   * @param {object} [options] 请求选项。
+   * @param {boolean} [options.force=false] 是否绕过详情缓存强制重拉。
+   * @returns {Promise<{statuses: Array<object>, fromCache: boolean}>} 按传入顺序的好友状态及是否命中缓存。
+   */
+  async function fetchFriendDetails(friends, { force = false } = {}) {
+    const results = new Array(friends.length);
+    let fromCache = false;
+    let nextIndex = 0;
+
+    const worker = async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= friends.length) {
+          return;
+        }
+
+        const friend = friends[index];
+        const cached = !force ? state.friendDetailCache[friend.id] : null;
+
+        if (cached && Date.now() - cached.fetchedAt < FRIEND_DETAIL_CACHE_MS) {
+          results[index] = cached.status;
+          fromCache = true;
+          continue;
+        }
+
+        const detailPayload = await requestJson(buildFriendFarmUrl(friend.id));
+        const status = normalizeFriendFarm(friend, detailPayload);
+        state.friendDetailCache[friend.id] = { status, fetchedAt: Date.now() };
+        results[index] = status;
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(3, friends.length) }, () => worker()),
     );
 
-    return statuses.sort((a, b) => {
-      if (a.isStealable !== b.isStealable) {
-        return a.isStealable ? -1 : 1;
-      }
-
-      const aTime = a.firstCrop?.maturesAt?.getTime?.() || Number.POSITIVE_INFINITY;
-      const bTime = b.firstCrop?.maturesAt?.getTime?.() || Number.POSITIVE_INFINITY;
-      return aTime - bTime;
-    });
+    return { statuses: results, fromCache };
   }
 
   /**
@@ -1774,6 +1869,58 @@
         .friend-list {
           display: grid;
           gap: 8px;
+        }
+
+        .friend-stale-hint {
+          padding: 6px 10px;
+          border: 1px solid rgba(183, 121, 31, 0.28);
+          border-radius: 7px;
+          background: #fffdf7;
+          color: var(--gold);
+          font-size: 11px;
+          line-height: 1.4;
+        }
+
+        :host(.theme-dark) .friend-stale-hint {
+          background: rgba(246, 184, 75, 0.08);
+        }
+
+        .friend-pagination {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          margin-top: 4px;
+        }
+
+        .friend-pagination span {
+          color: var(--muted);
+          font-size: 12px;
+          min-width: 44px;
+          text-align: center;
+        }
+
+        .friend-page-btn {
+          height: 26px;
+          padding: 0 12px;
+          border: 1px solid var(--line);
+          border-radius: 7px;
+          background: #fff;
+          color: var(--text);
+          cursor: pointer;
+          font-size: 12px;
+          font-weight: 600;
+          line-height: 1;
+        }
+
+        :host(.theme-dark) .friend-page-btn {
+          background: #172033;
+        }
+
+        .friend-page-btn:disabled {
+          background: #eef2f6;
+          color: #98a2b3;
+          cursor: not-allowed;
         }
 
         .crop-card {
@@ -2545,7 +2692,7 @@
       render(api);
     });
 
-    api.refresh.addEventListener("click", () => refreshData(api, { force: true }));
+    api.refresh.addEventListener("click", () => refreshData(api, { force: true, forceFriendDetails: true }));
 
     api.body.addEventListener("click", (event) => {
       if (!(event.target instanceof Element)) {
@@ -2564,6 +2711,21 @@
 
       if (button.dataset.action === "steal-friend" && !button.disabled) {
         handleStealFriend(api, button.dataset.friendId);
+        return;
+      }
+
+      if (button.dataset.action === "friend-prev-page" || button.dataset.action === "friend-next-page") {
+        const nextPage =
+          button.dataset.action === "friend-prev-page"
+            ? Math.max(1, state.friendPage - 1)
+            : Math.min(state.friendTotalPages, state.friendPage + 1);
+        if (nextPage === state.friendPage) {
+          return;
+        }
+        state.friendPage = nextPage;
+        state.friendFromCache = false;
+        render(api);
+        refreshData(api, { force: true });
         return;
       }
 
@@ -2688,8 +2850,8 @@
       tab.addEventListener("click", () => {
         state.page = tab.dataset.page;
         render(api);
-        if (state.expanded && !state.loading && needsData()) {
-          refreshData(api);
+        if (state.expanded && !state.loading) {
+          refreshData(api, { force: true });
         }
       });
     }
@@ -3089,14 +3251,27 @@
     const noticeHtml = renderNotice(state.stealNotice, state.stealNoticeType, "stealNotice");
 
     api.summary.textContent =
-      friends.length > 0
-        ? `${stealableCount} 可偷菜 · ${friends.length} 位好友`
+      state.friendTotal > 0
+        ? `${stealableCount} 可偷菜 · ${state.friendTotal} 位好友`
         : "";
 
     if (friends.length === 0) {
       api.body.innerHTML = `<div class="empty">暂无好友农场数据</div>`;
       return;
     }
+
+    const paginationHtml =
+      state.friendTotalPages > 1
+        ? `<div class="friend-pagination">
+            <button class="friend-page-btn" type="button" data-action="friend-prev-page" ${
+              state.friendPage <= 1 ? "disabled" : ""
+            }>上一页</button>
+            <span>${state.friendPage} / ${state.friendTotalPages}</span>
+            <button class="friend-page-btn" type="button" data-action="friend-next-page" ${
+              state.friendPage >= state.friendTotalPages ? "disabled" : ""
+            }>下一页</button>
+          </div>`
+        : "";
 
     api.body.innerHTML = `
       <section class="hero">
@@ -3126,9 +3301,15 @@
         </div>
       </section>
       ${noticeHtml}
+      ${
+        state.friendFromCache
+          ? '<div class="friend-stale-hint">好友状态为缓存数据，可能已过期 · 点顶部刷新按钮获取最新</div>'
+          : ""
+      }
       <div class="friend-list">
         ${friends.map((friend) => renderFriendBar(friend)).join("")}
       </div>
+      ${paginationHtml}
     `;
   }
 
@@ -3448,12 +3629,14 @@
    * 后端 plots 接口的 totalSlots 是当前总土地数量；已种植数量以最新 crops 计算，避免空地补齐逻辑
    * 或接口 freeSlots 字段变化影响判断。
    *
+   * @param {Array<object>} [cropsOverride] 调用方已拉取的地块数据；传入则复用，避免重复请求。
+   *   不传时保持原行为，内部强制重新拉取 crops。
    * @returns {Promise<object>} 可种植空地数量和最新地块列表。
    */
-  async function fetchPlantCapacity() {
+  async function fetchPlantCapacity(cropsOverride) {
     const [plotsPayload, crops] = await Promise.all([
       requestJson(PLOTS_URL),
-      fetchCropsData({ force: true }),
+      cropsOverride ? Promise.resolve(cropsOverride) : fetchCropsData({ force: true }),
     ]);
     const totalSlots = Number(plotsPayload?.data?.totalSlots ?? plotsPayload?.totalSlots);
     const fallbackFreeSlots = Number(plotsPayload?.data?.freeSlots ?? plotsPayload?.freeSlots);
@@ -3852,7 +4035,9 @@
 
       try {
         // 成功后尽量刷新好友状态，让已偷过的好友从“可偷菜”里退出来。
-        nextFriends = await fetchFriendStatuses();
+        // 先失效该好友缓存，确保详情被重新拉取；其余好友命中缓存复用。
+        delete state.friendDetailCache[friendId];
+        nextFriends = (await fetchFriendStatuses()).statuses;
       } catch {
         // 偷菜已经成功时，不让后续刷新失败覆盖成功结果。
       }
@@ -3875,7 +4060,9 @@
       if (error.payload) {
         try {
           // success:false 通常表示已被偷完；仍刷新好友状态，减少列表继续显示可偷的概率。
-          nextFriends = await fetchFriendStatuses();
+          // 失效该好友缓存强制重拉详情。
+          delete state.friendDetailCache[friendId];
+          nextFriends = (await fetchFriendStatuses()).statuses;
         } catch {
           // 业务失败提示优先，刷新失败不额外覆盖提示。
         }
@@ -4121,9 +4308,8 @@
       if (state.replantSeedId) {
         await new Promise((r) => window.setTimeout(r, 10000));
         try {
-          const freshCrops = await fetchCropsData({ force: true });
           const freshInventory = await fetchInventoryData({ force: true });
-          const plantCapacity = await fetchPlantCapacity();
+          const plantCapacity = await fetchPlantCapacity(harvestResult.crops);
           const freeSlots = Math.max(0, plantCapacity.freeSlots);
 
           const selectedItem = (freshInventory || []).find((item) => item.seedId === state.replantSeedId);
@@ -4297,7 +4483,7 @@
    * @param {object} api createRoot 返回的 DOM 引用集合。
    * @returns {Promise<void>}
    */
-  async function refreshData(api, { force = false } = {}) {
+  async function refreshData(api, { force = false, forceFriendDetails = false } = {}) {
     state = {
       ...state,
       loading: true,
@@ -4306,7 +4492,7 @@
     render(api);
 
     try {
-      const nextState = await loadCurrentPageData({ force });
+      const nextState = await loadCurrentPageData({ force, forceFriendDetails });
 
       state = {
         ...state,
@@ -4328,9 +4514,6 @@
 
     render(api);
     scheduleNextCropReadyRender(api);
-    if (state.page !== "crops") {
-      refreshCropStatus(api);
-    }
   }
 
   /**
@@ -4353,10 +4536,15 @@
     };
   }
 
-  async function loadCurrentPageData({ force = false } = {}) {
+  async function loadCurrentPageData({ force = false, forceFriendDetails = false } = {}) {
     if (state.page === "friends") {
+      const friendData = await fetchFriendStatuses({ forceDetails: forceFriendDetails });
       return {
-        friends: await fetchFriendStatuses(),
+        friends: friendData.statuses,
+        friendTotal: friendData.total,
+        friendTotalPages: friendData.totalPages,
+        friendPage: friendData.page,
+        friendFromCache: friendData.fromCache,
       };
     }
 

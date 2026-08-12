@@ -7,7 +7,7 @@ Tampermonkey userscript + Node CLI helper for HYB Farm (黑与白农场). Pure J
 - **Main artifact**: `Tampermonkey/farm-profit-ranking.user.js` (single IIFE, Shadow DOM UI)
 - **CLI**: `script/crop-profit-ranking.js` (uses `cli-table3`)
 - **Docs**: `doc/api.md` (API contracts), `doc/implement.md` (impl details), `doc/CHANGELOG.md` (version history)
-- **Archive**: `doc/archive/auto-harvest-plan.md`, `doc/archive/debuff-display-plan.md`, `doc/archive/refactory.md`
+- **Archive**: `doc/archive/readme.md` (index), `doc/archive/auto-harvest-plan.md`, `doc/archive/debuff-display-plan.md`, `doc/archive/refactory.md`
 - **Refactor preview**: `Tampermonkey/refactor.js`
 - **Also read**: `.claude/CLAUDE.md` (communication rules, git rules, red-line ops)
 
@@ -36,10 +36,22 @@ IIFE at `document-idle`, calls `createRoot()` → `render(api)` → `refreshCrop
 Single mutable global `state` object. All handlers mutate `state` directly then call `render(api)`. Theme persisted via `localStorage` (`hyb-farm-profit-theme` key).
 
 ### API layer
-`requestJson()` wraps `GM_xmlhttpRequest` with 15s timeout, `anonymous: false` to carry browser cookies. 13 endpoints all under `https://cdk.hybgzs.com/api/farm/`. Price normalization: `real_price = api_value / 500000` (`PRICE_DIVISOR`).
+`requestJson()` wraps `GM_xmlhttpRequest` with 15s timeout, `anonymous: false` to carry browser cookies. 13 endpoints all under `https://cdk.hybgzs.com/api/farm/`. Price normalization: `real_price = api_value / 500000` (`PRICE_DIVISOR`). **GET dedupe**: a same-URL GET with an in-flight request reuses it (`inflightGetRequests` map); POST never merges. `force: true` on `fetchCropsData`/`fetchInventoryData` only bypasses their per-call promise reuse, NOT the `requestJson` GET dedupe.
 
 ### Three tabs (plus panels)
 收益排行 / 我的农场 / 好友农场 — event delegation on `.body`, tab selection in `state.page`.
+
+**刷新与切 tab 行为 (v3.2.9)**:
+- Refresh button refreshes ONLY the current tab's data — it no longer piggybacks a silent `refreshCropStatus` GET; in friends tab it passes `forceFriendDetails: true` to bypass the detail cache
+- Switching tabs always auto-refreshes the current tab via `refreshData(api, { force: true })` (the old `needsData()` "first-visit-only" gate was removed from the tab handler; it is still used by panel expand and the loading text)
+- `refreshData(api, { force, forceFriendDetails })` → `loadCurrentPageData({ force, forceFriendDetails })` → friends branch calls `fetchFriendStatuses({ forceDetails })`
+
+**好友农场 tab (friends page, v3.2.9)**:
+- `fetchFriendStatuses({ forceDetails })` returns an OBJECT `{ statuses, total, totalPages, page, fromCache }` — NOT an array. Callers must read `.statuses` (e.g. the steal handler)
+- Details are fetched per page (`FRIENDS_PAGE_SIZE = 5`) with a 3-concurrency worker pool in `fetchFriendDetails`; the friends list request is always refetched
+- Detail cache: `state.friendDetailCache[friendId] = { status, fetchedAt }`, TTL `FRIEND_DETAIL_CACHE_MS = 30000`. Invalidated on that friend's steal success/failure (`delete state.friendDetailCache[friendId]`); bypassed by the refresh button
+- `state.friendFromCache` drives a stale hint; pagination buttons use `data-action="friend-prev-page"` / `friend-next-page`
+- Maturity-ascending sort holds only WITHIN the current page (cross-page global sort no longer applies); stealable-first ordering still works
 
 **我的农场 tab** is structured as: overview hero → three collapsible `<details>` panels:
 
@@ -55,7 +67,7 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 **Auto-harvest (自动收菜)**:
 - **Trigger**: maturity `cropReadyTimer` fires → `runAutoHarvestCycle(api)` + 60s polling fallback + `visibilitychange` wake
 - **Harvest**: `performHarvestAll(api)` (no confirm) extracted from `handleHarvestAll` (with confirm) — returns `{ok, crops, inventory, error}`
-- **Replant**: delayed 10s after harvest; uses `state.replantSeedId` from inventory; persisted via `localStorage` (`hyb-farm-profit-replant-seed`)
+- **Replant**: delayed 10s after harvest; uses `state.replantSeedId` from inventory; persisted via `localStorage` (`hyb-farm-profit-replant-seed`). Reuses `harvestResult.crops` via `fetchPlantCapacity(cropsOverride)` (v3.2.9 — no redundant crops refetch); 一键种植 calls it WITHOUT the override to keep old force-refresh behavior
 - **Guards**: `state.harvesting` / `autoHarvestBusy` / `careBusy` / `autoCareBusy` lock + 30s min interval
 - **localStorage keys**: `hyb-farm-profit-auto-harvest`, `hyb-farm-profit-replant-seed`
 
@@ -130,7 +142,7 @@ Header buttons, trigger, and notice-close use Google Material Symbols glyphs wit
 3. **`conditions` field is NOT `string[]`**: API returns objects `{kind: "thirsty"}`. `normalizeCrops` maps them to `{kind, name, icon}` via `DEBUFF_META`. Don't call `.join("、")` on raw conditions.
 4. **Icon font MUST load via FontFace API**: shadow-root `@font-face` (in `<style>` or via `<link>`) silently fails to load in Chromium on the real game page — icons render as raw ligature text (`light_mode`). This is verified behavior; do not "simplify" back to CSS `@font-face`.
 5. **`normalizeFriendFarm`**: friend with `firstCrop === null` is wrongly marked stealable
-6. **`fetchFriendStatuses`** uses unbounded `Promise.all` — one failure rejects entire friends page
+6. **好友详情缓存 (v3.2.9)**: `fetchFriendStatuses` shows cached detail up to 30s — a friend's crop can mature mid-TTL; the stale hint appears but data stays old until the refresh button is clicked. `friendFromCache` is NOT re-set by the steal handler's refresh (only by `loadCurrentPageData`)
 7. **Mutation paths** (harvest/recycle/plant/steal/auto-harvest/care) change server state with zero automated coverage
 8. **Background refresh failures** (`refreshCropStatus`) silently swallowed — no stale indicator
 9. **`cookie.txt`** is gitignored but still in repo root — easy to leak via zip/screenshot
