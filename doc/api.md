@@ -115,6 +115,7 @@ https://cdk.hybgzs.com/farm/crops/pumpkin_s4.png
 | 农场地块容量 | GET | `/api/farm/plots` |
 | 我的仓库 | GET | `/api/farm/inventory` |
 | 一键收菜 | POST | `/api/farm/harvest-all` |
+| 一键务农 | POST | `/api/farm/care/all` |
 | 回收报价 | POST | `/api/farm/recycle/quote` |
 | 作物回收 | POST | `/api/farm/recycle` |
 | 批量种植 | POST | `/api/farm/plant-batch` |
@@ -267,7 +268,7 @@ type Crop = {
   pestHealedAt?: string | null;
   debuffDelaySeconds?: number;
   lastDelayFlushAt?: string | null;
-  conditions?: string[];
+  conditions?: { kind: "thirsty" | "weed" | "pest" }[];
 };
 
 type PlotLevel = {
@@ -289,7 +290,7 @@ maturesAt UTC 成熟时间
 isHarvested 是否已收获；已收获会作为空地处理
 isMature 是否成熟
 remainingTime 剩余成熟秒数
-conditions 异常状态列表
+conditions 异常状态列表，kind 取值：thirsty=缺水 / weed=杂草 / pest=虫害
 maxSlots 当前最大田地数量，农场情况优先使用它补齐空地
 plotLevels[].plotIndex maxSlots 缺失时的田地数量兜底来源
 ```
@@ -435,6 +436,50 @@ type HarvestAllResponse = ApiSuccess<unknown>;
 点击后先弹出二次确认
 成功后刷新当前地块
 如果仓库已经加载，也同步刷新仓库
+```
+
+## 一键务农
+
+处理自己农场中所有地块的 debuff（缺水、杂草、虫害）。
+
+```http
+POST https://cdk.hybgzs.com/api/farm/care/all
+```
+
+### 请求体
+
+无。
+
+### 响应结构
+
+```ts
+type CareAllResponse = {
+  success: true;
+  processed: number;
+  skipped: number;
+  energySpent: number;
+  byKind: {
+    thirsty?: number;
+    weed?: number;
+    pest?: number;
+  };
+};
+```
+
+```text
+processed 实际处理的地块数
+skipped   无需处理的地块数
+energySpent 消耗的精力值
+byKind    按 debuff 种类汇总的处理数量
+```
+
+### 脚本处理
+
+```text
+按钮仅在有 debuff 的地块时启用（显示「一键务农 (N)」）
+无 debuff 时按钮置灰
+成功后刷新当前地块，debuff 状态实时更新
+失败时显示红色错误提示条
 ```
 
 ## 回收报价

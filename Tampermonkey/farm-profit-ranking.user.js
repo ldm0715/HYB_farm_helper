@@ -26,6 +26,13 @@
   const HARVEST_ALL_URL = "https://cdk.hybgzs.com/api/farm/harvest-all";
   const FRIENDS_STEALABLE_URL = "https://cdk.hybgzs.com/api/farm/friends/stealable";
   const STEAL_FRIEND_AUTO_URL = "https://cdk.hybgzs.com/api/farm/steal/friend-auto";
+  const CARE_ALL_URL = "https://cdk.hybgzs.com/api/farm/care/all";
+  const DEBUFF_META = {
+    thirsty: { name: "缺水", icon: "💧" },
+    weed: { name: "杂草", icon: "🌿" },
+    pest: { name: "虫害", icon: "🐛" },
+  };
+  const CROP_PLACEHOLDER_URL = "https://cdk.hybgzs.com/farm/crops/starfruit_s2.png";
   const STEAL_COOLDOWN_MS = 5000;
   const RECYCLE_MAX_SLIPPAGE_BPS = 300;
   const PRICE_DIVISOR = 500000;
@@ -103,6 +110,9 @@
     inventoryPlanting: false,
     inventoryRecycleNotice: "",
     inventoryRecycleNoticeType: "",
+    careBusy: false,
+    careNotice: "",
+    careNoticeType: "",
     friends: [],
     error: "",
     updatedAt: "",
@@ -615,7 +625,15 @@
           isMature: !isEmpty && (Boolean(crop.isMature) || remainingTime <= 0),
           remainingTime,
           isEmpty,
-          conditions: Array.isArray(crop.conditions) ? crop.conditions : [],
+          conditions: Array.isArray(crop.conditions)
+            ? crop.conditions
+                .map((c) => {
+                  const kind = typeof c === "string" ? c : c?.kind;
+                  const meta = DEBUFF_META[kind];
+                  return meta ? { kind, name: meta.name, icon: meta.icon } : null;
+                })
+                .filter(Boolean)
+            : [],
         };
       })
       .sort((a, b) => {
@@ -1334,6 +1352,17 @@
           gap: 8px;
         }
 
+        .farm-care-actions {
+          display: flex;
+          justify-content: flex-end;
+          padding: 0 8px 8px;
+        }
+
+        .farm-care-actions .inventory-sell-selected {
+          height: 28px;
+          padding: 0 10px;
+        }
+
         .inventory-select-toggle,
         .inventory-sell-selected,
         .inventory-plant-selected {
@@ -1387,9 +1416,10 @@
           color: #64748b;
         }
 
-        .inventory-recycle-notice {
+        .notice {
+          position: relative;
           margin: 0 8px 8px;
-          padding: 8px 10px;
+          padding: 8px 28px 8px 10px;
           border: 1px solid rgba(19, 138, 91, 0.22);
           border-radius: 8px;
           background: #f6fef9;
@@ -1400,20 +1430,47 @@
           white-space: pre-line;
         }
 
-        :host(.theme-dark) .inventory-recycle-notice {
+        :host(.theme-dark) .notice {
           border-color: rgba(100, 216, 154, 0.26);
           background: #10251d;
         }
 
-        .inventory-recycle-notice.error {
+        .notice.error {
           border-color: rgba(180, 35, 24, 0.2);
           background: #fff7f5;
           color: var(--warn);
         }
 
-        :host(.theme-dark) .inventory-recycle-notice.error {
+        :host(.theme-dark) .notice.error {
           border-color: rgba(249, 112, 102, 0.26);
           background: #2a1416;
+        }
+
+        .notice-close {
+          position: absolute;
+          top: 6px;
+          right: 6px;
+          width: 20px;
+          height: 20px;
+          border: none;
+          border-radius: 4px;
+          background: transparent;
+          color: inherit;
+          cursor: pointer;
+          font-size: 14px;
+          line-height: 1;
+          opacity: 0.7;
+          display: grid;
+          place-items: center;
+        }
+
+        .notice-close:hover {
+          opacity: 1;
+          background: rgba(0, 0, 0, 0.08);
+        }
+
+        :host(.theme-dark) .notice-close:hover {
+          background: rgba(255, 255, 255, 0.1);
         }
 
         .friend-list {
@@ -1643,6 +1700,18 @@
           font-size: 10px;
           line-height: 14px;
           text-align: center;
+        }
+
+        .plot-sub.debuff {
+          color: var(--warn);
+          font-weight: 600;
+        }
+
+        .crop-icon.debuff-icon {
+          display: grid;
+          place-items: center;
+          font-size: 14px;
+          line-height: 1;
         }
 
         .countdown {
@@ -1883,39 +1952,6 @@
           cursor: not-allowed;
         }
 
-        .steal-notice {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          margin-bottom: 8px;
-          padding: 9px 10px;
-          border: 1px solid rgba(19, 138, 91, 0.22);
-          border-radius: 8px;
-          background: #f6fef9;
-          color: var(--accent-strong);
-          text-align: center;
-          font-size: 12px;
-          font-weight: 700;
-          line-height: 18px;
-          min-height: 38px;
-        }
-
-        :host(.theme-dark) .steal-notice {
-          border-color: rgba(100, 216, 154, 0.26);
-          background: #10251d;
-        }
-
-        .steal-notice.error {
-          border-color: rgba(180, 35, 24, 0.2);
-          background: #fff7f5;
-          color: var(--warn);
-        }
-
-        :host(.theme-dark) .steal-notice.error {
-          border-color: rgba(249, 112, 102, 0.26);
-          background: #2a1416;
-        }
-
         .countdown span {
           color: var(--muted);
           font-size: 10px;
@@ -2115,34 +2151,6 @@
         :host(.theme-dark) .replant-select {
           background: #172033;
         }
-
-        .auto-harvest-notice {
-          margin: 0 14px 8px;
-          padding: 8px 12px;
-          border: 1px solid rgba(31, 143, 95, 0.22);
-          border-radius: 7px;
-          background: rgba(31, 143, 95, 0.06);
-          color: var(--text);
-          font-size: 12px;
-          line-height: 18px;
-          white-space: pre-line;
-        }
-
-        :host(.theme-dark) .auto-harvest-notice {
-          border-color: rgba(100, 216, 154, 0.26);
-          background: #10251d;
-        }
-
-        .auto-harvest-notice.error {
-          border-color: rgba(180, 35, 24, 0.2);
-          background: #fff7f5;
-          color: var(--warn);
-        }
-
-        :host(.theme-dark) .auto-harvest-notice.error {
-          border-color: rgba(249, 112, 102, 0.26);
-          background: #2a1416;
-        }
       </style>
       <button class="trigger" type="button" title="黑与白农场小助手" aria-label="打开黑与白农场小助手">$</button>
       <section class="panel hidden" aria-label="黑与白农场小助手">
@@ -2241,6 +2249,20 @@
 
       if (button.dataset.action === "inventory-plant-selected" && !button.disabled) {
         handlePlantSelectedInventory(api);
+        return;
+      }
+
+      if (button.dataset.action === "care-all" && !button.disabled) {
+        handleCareAll(api);
+        return;
+      }
+
+      if (button.dataset.action === "dismiss-notice") {
+        const key = button.dataset.noticeKey;
+        if (key) {
+          state = { ...state, [key]: "", [`${key}Type`]: "" };
+          render(api);
+        }
       }
     });
 
@@ -2463,6 +2485,23 @@
   }
 
   /**
+   * 渲染可关闭的提示条，供仓库、自动收菜、偷菜、一键务农共用。
+   *
+   * @param {string} message 提示内容。
+   * @param {string} type 提示类型，"error" 时变红。
+   * @param {string} noticeKey state 中 notice 字段的键名（不含 Type 后缀）。
+   * @returns {string} 提示条 HTML；message 为空时返回空字符串。
+   */
+  function renderNotice(message, type, noticeKey) {
+    if (!message) return "";
+    return `
+      <div class="notice ${type === "error" ? "error" : ""}">
+        <span class="notice-text">${escapeHtml(message)}</span>
+        <button type="button" class="notice-close" data-action="dismiss-notice" data-notice-key="${noticeKey}" aria-label="关闭提示">×</button>
+      </div>`;
+  }
+
+  /**
    * 渲染成熟时间页。
    *
    * 顶部 hero 优先展示可收获数量；没有成熟地块时展示下一块成熟的北京时间。
@@ -2477,19 +2516,13 @@
     const inventory = state.inventory;
     const selectedInventoryQuantity = getSelectedInventoryItems().reduce((sum, item) => sum + item.selectedQuantity, 0);
     const inventoryBusy = state.inventoryRecycling || state.inventoryPlanting;
-    const inventoryNoticeHtml = state.inventoryRecycleNotice
-      ? `<div class="inventory-recycle-notice ${
-          state.inventoryRecycleNoticeType === "error" ? "error" : ""
-        }">${escapeHtml(state.inventoryRecycleNotice)}</div>`
-      : "";
+    const careCount = crops.filter((crop) => !crop.isEmpty && crop.conditions.length > 0).length;
+    const careNeeded = careCount > 0;
+    const inventoryNoticeHtml = renderNotice(state.inventoryRecycleNotice, state.inventoryRecycleNoticeType, "inventoryRecycleNotice");
     const readyCount = plantedCrops.filter((crop) => crop.isMature).length;
     const nextCrop = plantedCrops.find((crop) => !crop.isMature);
     const heroCrop = readyCount > 0 ? plantedCrops.find((crop) => crop.isMature) : nextCrop;
-    const autoHarvestNoticeHtml = state.autoHarvestNotice
-      ? `<div class="auto-harvest-notice ${
-          state.autoHarvestNoticeType === "error" ? "error" : ""
-        }">${escapeHtml(state.autoHarvestNotice)}</div>`
-      : "";
+    const autoHarvestNoticeHtml = renderNotice(state.autoHarvestNotice, state.autoHarvestNoticeType, "autoHarvestNotice");
 
     let autoHarvestHintText = "";
     if (state.autoHarvestEnabled) {
@@ -2575,6 +2608,14 @@
         <div class="plot-grid">
           ${farmPlots.map((crop) => renderPlotCard(crop)).join("")}
         </div>
+        ${renderNotice(state.careNotice, state.careNoticeType, "careNotice")}
+        <div class="farm-care-actions">
+          <button class="inventory-sell-selected farm-care-all" type="button" data-action="care-all" ${
+            state.careBusy || !careNeeded ? "disabled" : ""
+          }>
+            ${state.careBusy ? "务农中" : careNeeded ? `一键务农 (${careCount})` : "一键务农"}
+          </button>
+        </div>
       </details>
       <details class="farm-status-panel" data-panel="auto-harvest" ${
         state.autoHarvestPanelOpen ? "open" : ""
@@ -2644,11 +2685,7 @@
     const stealableCount = friends.filter((friend) => friend.isStealable).length;
     const nextFriend = friends.find((friend) => !friend.isStealable && friend.firstCrop);
     // 偷菜结果是好友页内提示，不走全局 error，避免业务失败时清空好友列表。
-    const noticeHtml = state.stealNotice
-      ? `<div class="steal-notice ${state.stealNoticeType === "error" ? "error" : ""}">${escapeHtml(
-          state.stealNotice,
-        )}</div>`
-      : "";
+    const noticeHtml = renderNotice(state.stealNotice, state.stealNoticeType, "stealNotice");
 
     api.summary.textContent =
       friends.length > 0
@@ -2812,8 +2849,18 @@
       `;
     }
 
-    const conditionText =
-      crop.conditions.length > 0 ? `状态 ${crop.conditions.join("、")}` : "状态正常";
+    const debuffs = crop.conditions;
+    const hasDebuff = debuffs.length > 0;
+
+    const plotIcon = crop.isMature
+      ? renderCropIcon(crop.iconUrl, crop.seedName, "tiny")
+      : hasDebuff
+        ? '<span class="crop-icon debuff-icon">' + debuffs.map((d) => d.icon).join("") + "</span>"
+        : renderCropIcon(CROP_PLACEHOLDER_URL, crop.seedName, "tiny");
+
+    const conditionText = hasDebuff
+      ? `状态 ${debuffs.map((d) => d.name).join("、")}`
+      : "状态正常";
 
     return `
       <article class="plot-card ${crop.isMature ? "ready" : ""}" title="第 ${crop.plotIndex + 1} 块地 - ${escapeHtml(
@@ -2825,10 +2872,10 @@
         </div>
         <div>
           <div class="plot-title">
-            ${renderCropIcon(crop.iconUrl, crop.seedName, "tiny")}
+            ${plotIcon}
             <strong>${escapeHtml(crop.seedName)}</strong>
           </div>
-          <div class="plot-sub">${escapeHtml(conditionText)}</div>
+          <div class="plot-sub ${hasDebuff ? "debuff" : ""}">${escapeHtml(conditionText)}</div>
         </div>
         <div class="countdown">
           <strong>${crop.isMature ? "现在" : formatDateTime(crop.maturesAt)}</strong>
@@ -3528,6 +3575,67 @@
   }
 
   /**
+   * 一键务农：调用 /api/farm/care/all 处理所有地块的 debuff。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @returns {Promise<void>}
+   */
+  async function handleCareAll(api) {
+    if (state.careBusy) {
+      return;
+    }
+
+    state = {
+      ...state,
+      farmStatusPanelOpen: true,
+      careBusy: true,
+      careNotice: "",
+      careNoticeType: "",
+    };
+    render(api);
+
+    try {
+      const payload = await requestJson(CARE_ALL_URL, { method: "POST" });
+      const data = payload?.data || payload;
+      const byKind = data?.byKind || {};
+      const processed = Number(data?.processed) || 0;
+      const kindParts = Object.keys(byKind)
+        .filter((k) => byKind[k] > 0)
+        .map((k) => `${DEBUFF_META[k]?.name || k} ${byKind[k]}`);
+      const message = kindParts.length > 0
+        ? `处理 ${processed} 处：${kindParts.join("、")}`
+        : `处理 ${processed} 处异常`;
+
+      const crops = await fetchCropsData({ force: true });
+
+      state = {
+        ...state,
+        crops,
+        farmStatusPanelOpen: true,
+        careBusy: false,
+        careNotice: message,
+        careNoticeType: "success",
+        updatedAt: new Date().toLocaleTimeString("zh-CN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+      };
+      scheduleNextCropReadyRender(api);
+    } catch (error) {
+      state = {
+        ...state,
+        farmStatusPanelOpen: true,
+        careBusy: false,
+        careNotice: error.message || "一键务农失败",
+        careNoticeType: "error",
+      };
+    }
+
+    render(api);
+  }
+
+  /**
    * 自动收菜循环：检查成熟作物 → 收获 → 补种。
    *
    * @param {object} api createRoot 返回的 DOM 引用集合。
@@ -3539,7 +3647,8 @@
       state.autoHarvestBusy ||
       state.harvesting ||
       state.inventoryRecycling ||
-      state.inventoryPlanting
+      state.inventoryPlanting ||
+      state.careBusy
     ) {
       return;
     }

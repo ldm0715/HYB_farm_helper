@@ -170,6 +170,7 @@ POST 请求说明：
 
 ```text
 /api/farm/harvest-all 使用 POST，不需要请求体
+/api/farm/care/all 使用 POST，不需要请求体
 /api/farm/steal/friend-auto 使用 POST，需要 JSON 请求体
 /api/farm/recycle/quote 使用 POST，需要 JSON 请求体
 /api/farm/recycle 使用 POST，需要 JSON 请求体
@@ -424,7 +425,7 @@ type Crop = {
   pestHealedAt?: string | null;
   debuffDelaySeconds?: number;
   lastDelayFlushAt?: string | null;
-  conditions?: string[];
+  conditions?: { kind: "thirsty" | "weed" | "pest" }[];
 };
 
 type PlotLevel = {
@@ -446,7 +447,7 @@ data[].maturesAt UTC 成熟时间点
 data[].isHarvested 是否已收获；已收获会作为空地处理
 data[].isMature 是否成熟
 data[].remainingTime 剩余成熟秒数
-data[].conditions 异常状态列表
+data[].conditions 异常状态列表，kind 取值：thirsty=缺水 / weed=杂草 / pest=虫害
 maxSlots 当前账号最大田地数量，优先作为农场情况要展示的田地总数
 plotLevels[].plotIndex 地块等级数据里的地块序号，作为 maxSlots 缺失时的兜底来源
 ```
@@ -850,6 +851,67 @@ readyCount === 0 时按钮禁用
 请求期间按钮显示“收菜中”并禁用
 成功后刷新我的农场页地块数据；如果仓库已经加载，也会同步刷新仓库数据
 失败后展示错误信息
+```
+
+### 一键务农接口
+
+用途：
+
+```text
+处理自己农场中所有地块的 debuff（缺水、杂草、虫害），用于农场情况面板的一键务农按钮。
+```
+
+请求：
+
+```http
+POST https://cdk.hybgzs.com/api/farm/care/all
+Accept: application/json
+Cookie: 浏览器自动携带
+```
+
+路径参数 / 查询参数 / 请求体：
+
+```text
+无
+```
+
+脚本调用位置：
+
+```js
+handleCareAll(api)
+requestJson(CARE_ALL_URL, { method: "POST" })
+```
+
+响应结构：
+
+```ts
+type CareAllResponse = {
+  success: true;
+  processed: number;
+  skipped: number;
+  energySpent: number;
+  byKind: {
+    thirsty?: number;
+    weed?: number;
+    pest?: number;
+  };
+};
+```
+
+成功提示文案使用 `DEBUFF_META` 将 `byKind` 键值拼成中文：
+
+```
+处理 5 处：缺水 2、杂草 1、虫害 2
+```
+
+UI 行为：
+
+```text
+按钮仅在有 debuff 的地块时启用，显示「一键务农 (N)」
+无 debuff 时按钮置灰禁用
+请求期间按钮显示「务农中」并禁用
+成功后刷新当前地块数据
+失败后显示红色错误提示条，可点击 × 关闭
 ```
 
 ### 好友列表接口
@@ -1431,7 +1493,15 @@ function normalizeCrops(payload) {
         isMature: !isEmpty && (Boolean(crop.isMature) || remainingTime <= 0),
         remainingTime,
         isEmpty,
-        conditions: Array.isArray(crop.conditions) ? crop.conditions : [],
+        conditions: Array.isArray(crop.conditions)
+          ? crop.conditions
+              .map((c) => {
+                const kind = typeof c === "string" ? c : c?.kind;
+                const meta = DEBUFF_META[kind];
+                return meta ? { kind, name: meta.name, icon: meta.icon } : null;
+              })
+              .filter(Boolean)
+          : [],
       };
     })
     .sort((a, b) => {
@@ -1690,6 +1760,9 @@ display: none !important;
   inventoryPlanting: false,
   inventoryRecycleNotice: "",
   inventoryRecycleNoticeType: "",
+  careBusy: false,
+  careNotice: "",
+  careNoticeType: "",
   friends: [],
   error: "",
   updatedAt: ""
@@ -1722,6 +1795,9 @@ inventoryRecycling 是否正在执行一键卖出
 inventoryPlanting 是否正在执行一键种植
 inventoryRecycleNotice 我的仓库一键卖出或一键种植成功/失败提示文案，支持换行
 inventoryRecycleNoticeType 仓库操作提示类型，success / error
+careBusy 是否正在执行一键务农
+careNotice 一键务农成功/失败提示文案
+careNoticeType 一键务农提示类型，success / error
 friends 好友农场状态数据
 error 当前错误信息
 updatedAt 最近一次成功更新时间
@@ -1901,6 +1977,20 @@ api.body.addEventListener("click", (event) => {
 
   if (button.dataset.action === "inventory-plant-selected" && !button.disabled) {
     handlePlantSelectedInventory(api);
+    return;
+  }
+
+  if (button.dataset.action === "care-all" && !button.disabled) {
+    handleCareAll(api);
+    return;
+  }
+
+  if (button.dataset.action === "dismiss-notice") {
+    const key = button.dataset.noticeKey;
+    if (key) {
+      state = { ...state, [key]: "", [`${key}Type`]: "" };
+      render(api);
+    }
   }
 });
 
