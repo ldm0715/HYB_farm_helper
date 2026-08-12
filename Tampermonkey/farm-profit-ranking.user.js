@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Farm Helper
 // @namespace    https://cdk.hybgzs.com/
-// @version      2.8.15
+// @version      3.0.0
 // @description  轻量展示最划算的作物收益排行、全部地块成熟时间和好友农场状态。
 // @author       gcnanmu
 // @license      MIT
@@ -31,6 +31,10 @@
   const PRICE_DIVISOR = 500000;
   const ROOT_ID = "hyb-farm-profit-widget";
   const THEME_STORAGE_KEY = "hyb-farm-profit-theme";
+  const AUTO_HARVEST_STORAGE_KEY = "hyb-farm-profit-auto-harvest";
+  const REPLANT_SEED_STORAGE_KEY = "hyb-farm-profit-replant-seed";
+  const AUTO_HARVEST_MIN_INTERVAL_MS = 30000;
+  const AUTO_HARVEST_POLL_MS = 60000;
 
   /**
    * 将接口返回的作物图片相对路径转换为可直接展示的小图 URL。
@@ -102,6 +106,13 @@
     friends: [],
     error: "",
     updatedAt: "",
+    autoHarvestEnabled: getInitialAutoHarvest(),
+    autoHarvestBusy: false,
+    lastAutoHarvestAt: 0,
+    autoHarvestNotice: "",
+    autoHarvestNoticeType: "",
+    autoHarvestPanelOpen: false,
+    replantSeedId: getInitialReplantSeed(),
   };
 
   /**
@@ -127,6 +138,38 @@
       window.localStorage.setItem(THEME_STORAGE_KEY, theme);
     } catch {
       // 忽略存储失败，Tampermonkey 脚本仍可在当前页面内切换主题。
+    }
+  }
+
+  function getInitialAutoHarvest() {
+    try {
+      return window.localStorage.getItem(AUTO_HARVEST_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function saveAutoHarvest(enabled) {
+    try {
+      window.localStorage.setItem(AUTO_HARVEST_STORAGE_KEY, enabled ? "1" : "0");
+    } catch {
+      // 忽略存储失败。
+    }
+  }
+
+  function getInitialReplantSeed() {
+    try {
+      return window.localStorage.getItem(REPLANT_SEED_STORAGE_KEY) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function saveReplantSeed(seedId) {
+    try {
+      window.localStorage.setItem(REPLANT_SEED_STORAGE_KEY, seedId || "");
+    } catch {
+      // 忽略存储失败。
     }
   }
 
@@ -452,6 +495,9 @@
     cropReadyTimer = window.setTimeout(() => {
       cropReadyTimer = 0;
       render(api);
+      if (state.autoHarvestEnabled) {
+        runAutoHarvestCycle(api);
+      }
     }, Math.max(0, nextDelay) + 250);
   }
 
@@ -949,6 +995,7 @@
         }
 
         .header {
+          position: relative;
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -1023,6 +1070,10 @@
           padding: 0 10px;
           font-size: 13px;
           font-weight: 650;
+          width: 32px;
+          display: grid;
+          place-items: center;
+          font-size: 16px;
         }
 
         .refresh:disabled {
@@ -1966,6 +2017,132 @@
             display: none;
           }
         }
+
+        .auto-harvest-controls {
+          padding: 12px 14px;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .auto-harvest-controls .control-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+
+        .auto-harvest-controls .control-row:last-of-type {
+          margin-bottom: 0;
+        }
+
+        .auto-harvest-controls .control-label {
+          color: var(--text);
+          font-size: 13px;
+          font-weight: 650;
+          white-space: nowrap;
+        }
+
+        .auto-harvest-controls .control-hint {
+          color: var(--muted);
+          font-size: 11px;
+          line-height: 16px;
+          margin-top: 8px;
+        }
+
+        .auto-harvest-controls .control-hint:empty {
+          display: none;
+        }
+
+        .toggle-switch {
+          position: relative;
+          display: inline-block;
+          width: 40px;
+          height: 22px;
+          flex-shrink: 0;
+        }
+
+        .toggle-switch input {
+          opacity: 0;
+          width: 0;
+          height: 0;
+        }
+
+        .toggle-slider {
+          position: absolute;
+          cursor: pointer;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: var(--muted);
+          border-radius: 999px;
+          transition: background 0.2s;
+        }
+
+        .toggle-slider::before {
+          content: "";
+          position: absolute;
+          height: 16px;
+          width: 16px;
+          left: 3px;
+          bottom: 3px;
+          background: #fff;
+          border-radius: 50%;
+          transition: transform 0.2s;
+        }
+
+        .toggle-switch input:checked + .toggle-slider {
+          background: var(--accent);
+        }
+
+        .toggle-switch input:checked + .toggle-slider::before {
+          transform: translateX(18px);
+        }
+
+        .replant-select {
+          height: 28px;
+          padding: 0 8px;
+          border: 1px solid var(--line);
+          border-radius: 7px;
+          background: #fff;
+          color: var(--text);
+          font-size: 12px;
+          font-weight: 650;
+          cursor: pointer;
+          max-width: 140px;
+        }
+
+        :host(.theme-dark) .replant-select {
+          background: #172033;
+        }
+
+        .auto-harvest-notice {
+          margin: 0 14px 8px;
+          padding: 8px 12px;
+          border: 1px solid rgba(31, 143, 95, 0.22);
+          border-radius: 7px;
+          background: rgba(31, 143, 95, 0.06);
+          color: var(--text);
+          font-size: 12px;
+          line-height: 18px;
+          white-space: pre-line;
+        }
+
+        :host(.theme-dark) .auto-harvest-notice {
+          border-color: rgba(100, 216, 154, 0.26);
+          background: #10251d;
+        }
+
+        .auto-harvest-notice.error {
+          border-color: rgba(180, 35, 24, 0.2);
+          background: #fff7f5;
+          color: var(--warn);
+        }
+
+        :host(.theme-dark) .auto-harvest-notice.error {
+          border-color: rgba(249, 112, 102, 0.26);
+          background: #2a1416;
+        }
       </style>
       <button class="trigger" type="button" title="黑与白农场小助手" aria-label="打开黑与白农场小助手">$</button>
       <section class="panel hidden" aria-label="黑与白农场小助手">
@@ -1976,7 +2153,7 @@
           </div>
           <div class="actions">
             <button class="icon-btn theme-toggle" type="button" title="切换暗色主题" aria-label="切换暗色主题">🌙</button>
-            <button class="refresh" type="button">刷新</button>
+            <button class="refresh" type="button" title="刷新" aria-label="刷新">🔄</button>
             <button class="icon-btn close" type="button" title="收起" aria-label="收起">×</button>
           </div>
         </div>
@@ -2068,6 +2245,22 @@
     });
 
     api.body.addEventListener("change", (event) => {
+      if (event.target.matches(".auto-harvest-checkbox")) {
+        state.autoHarvestEnabled = event.target.checked;
+        saveAutoHarvest(state.autoHarvestEnabled);
+        render(api);
+        if (state.autoHarvestEnabled) {
+          runAutoHarvestCycle(api);
+        }
+        return;
+      }
+
+      if (event.target.matches(".replant-select")) {
+        state.replantSeedId = event.target.value;
+        saveReplantSeed(state.replantSeedId);
+        return;
+      }
+
       if (!(event.target instanceof HTMLInputElement)) {
         return;
       }
@@ -2096,6 +2289,10 @@
 
         if (event.target.dataset.panel === "inventory") {
           state.inventoryPanelOpen = event.target.open;
+        }
+
+        if (event.target.dataset.panel === "auto-harvest") {
+          state.autoHarvestPanelOpen = event.target.open;
         }
       },
       true,
@@ -2178,7 +2375,6 @@
     api.themeToggle.title = isDarkTheme ? "切换浅色主题" : "切换暗色主题";
     api.themeToggle.setAttribute("aria-label", isDarkTheme ? "切换浅色主题" : "切换暗色主题");
     api.refresh.disabled = state.loading;
-    api.refresh.textContent = state.loading ? "加载中" : "刷新";
     api.filters.classList.toggle("hidden", state.page !== "profit");
 
     for (const chip of api.chips) {
@@ -2289,6 +2485,48 @@
     const readyCount = plantedCrops.filter((crop) => crop.isMature).length;
     const nextCrop = plantedCrops.find((crop) => !crop.isMature);
     const heroCrop = readyCount > 0 ? plantedCrops.find((crop) => crop.isMature) : nextCrop;
+    const autoHarvestNoticeHtml = state.autoHarvestNotice
+      ? `<div class="auto-harvest-notice ${
+          state.autoHarvestNoticeType === "error" ? "error" : ""
+        }">${escapeHtml(state.autoHarvestNotice)}</div>`
+      : "";
+
+    let autoHarvestHintText = "";
+    if (state.autoHarvestEnabled) {
+      const planted = crops.filter((c) => !c.isEmpty && !c.isMature && c.maturesAt);
+      if (planted.length > 0) {
+        const nextMaturesAt = planted.reduce((earliest, c) =>
+          c.maturesAt.getTime() < earliest.getTime() ? c.maturesAt : earliest,
+          new Date(8640000000000000));
+        const diffMs = nextMaturesAt.getTime() - Date.now();
+        if (diffMs <= 0) {
+          const plantAt = new Date(Date.now() + 10000);
+          const plantTime = `${String(plantAt.getHours()).padStart(2, "0")}:${String(plantAt.getMinutes()).padStart(2, "0")}`;
+          autoHarvestHintText = `预计收菜：现在 / 预计补种：${plantTime}`;
+        } else {
+          const h = Math.floor(diffMs / 3600000);
+          const m = Math.floor((diffMs % 3600000) / 60000);
+          const time = `${String(nextMaturesAt.getHours()).padStart(2, "0")}:${String(nextMaturesAt.getMinutes()).padStart(2, "0")}`;
+          const plantAt = new Date(nextMaturesAt.getTime() + 10000);
+          const plantTime = `${String(plantAt.getHours()).padStart(2, "0")}:${String(plantAt.getMinutes()).padStart(2, "0")}`;
+          autoHarvestHintText = h > 0
+            ? `预计收菜：${time} / 预计补种：${plantTime}（${h}小时${m}分钟后）`
+            : `预计收菜：${time} / 预计补种：${plantTime}（${m}分钟后）`;
+        }
+      } else {
+        const allPlanted = crops.filter((c) => !c.isEmpty);
+        autoHarvestHintText = allPlanted.length > 0 ? "作物已全部成熟" : "暂无种植中的作物";
+      }
+    }
+
+    const replantOptions = inventory
+      .map(
+        (item) =>
+          `<option value="${escapeHtml(item.seedId)}" ${
+            item.seedId === state.replantSeedId ? "selected" : ""
+          }>${escapeHtml(item.seedName)}（${item.quantity}）</option>`,
+      )
+      .join("");
 
     api.summary.textContent =
       crops.length > 0
@@ -2331,10 +2569,33 @@
           </div>
         </div>
       </section>
+      ${autoHarvestNoticeHtml}
       <details class="farm-status-panel" data-panel="farm-status" ${state.farmStatusPanelOpen ? "open" : ""}>
         <summary>农场情况</summary>
         <div class="plot-grid">
           ${farmPlots.map((crop) => renderPlotCard(crop)).join("")}
+        </div>
+      </details>
+      <details class="farm-status-panel" data-panel="auto-harvest" ${
+        state.autoHarvestPanelOpen ? "open" : ""
+      }>
+        <summary>自动收菜</summary>
+        <div class="auto-harvest-controls">
+          <div class="control-row">
+            <span class="control-label">自动收菜</span>
+            <label class="toggle-switch">
+              <input type="checkbox" class="auto-harvest-checkbox" ${state.autoHarvestEnabled ? "checked" : ""}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="control-row">
+            <span class="control-label">补种作物</span>
+            <select class="replant-select">
+              <option value="" ${state.replantSeedId === "" ? "selected" : ""}>不补种</option>
+              ${replantOptions}
+            </select>
+          </div>
+          <div class="control-hint">${escapeHtml(autoHarvestHintText)}</div>
         </div>
       </details>
       <details class="farm-status-panel" data-panel="inventory" ${
@@ -3185,34 +3446,15 @@
   }
 
   /**
-   * 执行一键收菜。
-   *
-   * 该操作会改变农场数据，因此点击后先二次确认。接口成功后只刷新成熟时间页数据，
-   * 不重新请求收益排行或好友详情。
+   * 执行一键收菜核心逻辑，不含二次确认。
    *
    * @param {object} api createRoot 返回的 DOM 引用集合。
-   * @returns {Promise<void>}
+   * @returns {Promise<{ok: boolean, crops?: Array, inventory?: Array, error?: Error}>}
    */
-  async function handleHarvestAll(api) {
-    if (state.harvesting) {
-      return;
-    }
-
-    // 使用实时成熟状态，避免地块到点后按钮仍因旧 remainingTime 被判定为不可收。
-    const readyCount = getLiveCrops().filter((crop) => crop.isMature).length;
-    if (readyCount === 0) {
-      return;
-    }
-
-    const confirmed = window.confirm(`确认一键收获 ${readyCount} 块成熟地吗？`);
-    if (!confirmed) {
-      return;
-    }
-
+  async function performHarvestAll(api) {
     state = {
       ...state,
       harvesting: true,
-      error: "",
     };
     render(api);
 
@@ -3235,13 +3477,173 @@
           second: "2-digit",
         }),
       };
-      // 收菜后重新安排下一块成熟提醒；如果没有成熟作物，悬浮按钮会在 render 中恢复绿色。
       scheduleNextCropReadyRender(api);
+      render(api);
+      return { ok: true, crops, inventory };
     } catch (error) {
       state = {
         ...state,
         harvesting: false,
-        error: error.message || "一键收菜失败",
+      };
+      render(api);
+      return { ok: false, error };
+    }
+  }
+
+  /**
+   * 执行一键收菜（人工触发，带二次确认）。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @returns {Promise<void>}
+   */
+  async function handleHarvestAll(api) {
+    if (state.harvesting) {
+      return;
+    }
+
+    const readyCount = getLiveCrops().filter((crop) => crop.isMature).length;
+    if (readyCount === 0) {
+      return;
+    }
+
+    const confirmed = window.confirm(`确认一键收获 ${readyCount} 块成熟地吗？`);
+    if (!confirmed) {
+      return;
+    }
+
+    state = {
+      ...state,
+      error: "",
+    };
+    render(api);
+
+    const result = await performHarvestAll(api);
+    if (!result.ok) {
+      state = {
+        ...state,
+        error: result.error.message || "一键收菜失败",
+      };
+      render(api);
+    }
+  }
+
+  /**
+   * 自动收菜循环：检查成熟作物 → 收获 → 补种。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @returns {Promise<void>}
+   */
+  async function runAutoHarvestCycle(api) {
+    if (
+      !state.autoHarvestEnabled ||
+      state.autoHarvestBusy ||
+      state.harvesting ||
+      state.inventoryRecycling ||
+      state.inventoryPlanting
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - state.lastAutoHarvestAt < AUTO_HARVEST_MIN_INTERVAL_MS) {
+      return;
+    }
+
+    state = {
+      ...state,
+      autoHarvestBusy: true,
+      autoHarvestNoticeType: "",
+    };
+    render(api);
+
+    try {
+      const crops = await fetchCropsData({ force: true });
+
+      state = {
+        ...state,
+        crops,
+      };
+
+      const matureCount = getLiveCrops().filter((crop) => crop.isMature).length;
+      if (matureCount === 0) {
+        scheduleNextCropReadyRender(api);
+        state = {
+          ...state,
+          autoHarvestBusy: false,
+        };
+        render(api);
+        return;
+      }
+
+      const harvestResult = await performHarvestAll(api);
+      let noticeParts = [];
+
+      if (harvestResult.ok) {
+        noticeParts.push(`自动收菜 ${matureCount} 块地`);
+      } else {
+        noticeParts.push(`自动收菜失败：${harvestResult.error.message || "未知错误"}`);
+        state = {
+          ...state,
+          autoHarvestBusy: false,
+          lastAutoHarvestAt: now,
+          autoHarvestNotice: noticeParts.join(" · "),
+          autoHarvestNoticeType: "error",
+        };
+        render(api);
+        return;
+      }
+
+      if (state.replantSeedId) {
+        await new Promise((r) => window.setTimeout(r, 10000));
+        try {
+          const freshCrops = await fetchCropsData({ force: true });
+          const freshInventory = await fetchInventoryData({ force: true });
+          const plantCapacity = await fetchPlantCapacity();
+          const freeSlots = Math.max(0, plantCapacity.freeSlots);
+
+          const selectedItem = (freshInventory || []).find((item) => item.seedId === state.replantSeedId);
+
+          if (!selectedItem || selectedItem.quantity <= 0) {
+            noticeParts.push("补种失败：仓库无该作物");
+          } else if (freeSlots <= 0) {
+            noticeParts.push("无空闲土地可补种");
+          } else {
+            const plantQuantity = Math.min(freeSlots, selectedItem.quantity);
+            await plantInventoryItem({
+              seedId: selectedItem.seedId,
+              seedName: selectedItem.seedName,
+              selectedQuantity: plantQuantity,
+            });
+            noticeParts.push(`补种 ${plantQuantity} 个${selectedItem.seedName}`);
+          }
+        } catch (plantError) {
+          noticeParts.push(`补种失败：${plantError.message || "未知错误"}`);
+        }
+      }
+
+      const finalCrops = await fetchCropsData({ force: true });
+      const finalInventory = state.inventoryLoaded
+        ? await fetchInventoryData({ force: true })
+        : state.inventory;
+
+      state = {
+        ...state,
+        autoHarvestBusy: false,
+        lastAutoHarvestAt: now,
+        crops: finalCrops,
+        inventory: finalInventory,
+        inventorySelections: normalizeInventorySelections(finalInventory, state.inventorySelections),
+        autoHarvestNotice: noticeParts.join("\n"),
+        autoHarvestNoticeType: "success",
+      };
+      scheduleNextCropReadyRender(api);
+    } catch (error) {
+      state = {
+        ...state,
+        autoHarvestBusy: false,
+        lastAutoHarvestAt: now,
+        autoHarvestNotice: `自动收菜异常：${error.message || "未知错误"}`,
+        autoHarvestNoticeType: "error",
       };
     }
 
@@ -3375,4 +3777,14 @@
   const api = createRoot();
   render(api);
   refreshCropStatus(api);
+
+  setInterval(() => {
+    runAutoHarvestCycle(api);
+  }, AUTO_HARVEST_POLL_MS);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      runAutoHarvestCycle(api);
+    }
+  });
 })();
