@@ -2915,14 +2915,6 @@
             </label>
           </div>
           <div class="control-row">
-            <span class="control-label">补种作物</span>
-            <select class="replant-select">
-              <option value="" ${state.replantSeedId === "" ? "selected" : ""}>不补种</option>
-              ${replantOptions}
-            </select>
-          </div>
-          <div class="control-hint">${escapeHtml(autoHarvestHintText)}</div>
-          <div class="control-row">
             <span class="control-label">自动务农</span>
             <label class="toggle-switch">
               <input type="checkbox" class="auto-care-checkbox" ${state.autoCareEnabled ? "checked" : ""}>
@@ -2930,6 +2922,14 @@
             </label>
           </div>
           <div class="control-hint">${escapeHtml(autoCareHintText)}</div>
+          <div class="control-row">
+            <span class="control-label">补种作物</span>
+            <select class="replant-select">
+              <option value="" ${state.replantSeedId === "" ? "selected" : ""}>不补种</option>
+              ${replantOptions}
+            </select>
+          </div>
+          <div class="control-hint">${escapeHtml(autoHarvestHintText)}</div>
         </div>
       </details>
       <details class="farm-status-panel" data-panel="inventory" ${
