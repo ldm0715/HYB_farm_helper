@@ -45,17 +45,26 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 
 - **Overview hero** (总览): focus card with big number (harvest count or next maturity `HH:mm` via `formatClock`), action buttons (一键务农 above 一键收菜, vertical stack), and a 3-grid stats strip (生长中·空地 / 待务农 / 仓库). Stats are clickable `<button class="stat-card">` elements that scroll to the corresponding panel via `data-action="scroll-to-panel"`.
 - **农场情况 panel**: plot grid + 一键务农 + 一键收菜 buttons in `.farm-care-actions`
-- **自动收菜 panel**: auto-harvest toggle + replant select
+- **自动操作 panel**: auto-harvest toggle + replant select + auto-care toggle (独立轮询处理 debuff)
 - **我的仓库 panel**: inventory grid + 一键卖出/一键种植
 
 **Scroll-to-panel**: event handler opens the target `<details>` panel by setting `state.*PanelOpen`, re-renders, then `scrollIntoView({smooth})`. Uses `data-scroll-anchor` attribute on button containers for precise targeting (e.g. `.inventory-actions`, `.farm-care-actions`); falls back to the panel element when no anchor exists.
 
-### Auto-harvest system (v3.0.0)
+### Auto-harvest / auto-care system (v3.2.0)
+
+**Auto-harvest (自动收菜)**:
 - **Trigger**: maturity `cropReadyTimer` fires → `runAutoHarvestCycle(api)` + 60s polling fallback + `visibilitychange` wake
 - **Harvest**: `performHarvestAll(api)` (no confirm) extracted from `handleHarvestAll` (with confirm) — returns `{ok, crops, inventory, error}`
 - **Replant**: delayed 10s after harvest; uses `state.replantSeedId` from inventory; persisted via `localStorage` (`hyb-farm-profit-replant-seed`)
-- **Guards**: `state.harvesting` / `autoHarvestBusy` / `careBusy` triple lock + 30s min interval
+- **Guards**: `state.harvesting` / `autoHarvestBusy` / `careBusy` / `autoCareBusy` lock + 30s min interval
 - **localStorage keys**: `hyb-farm-profit-auto-harvest`, `hyb-farm-profit-replant-seed`
+
+**Auto-care (自动务农, v3.2.0)**:
+- **Trigger**: independent 5min polling (`AUTO_CARE_POLL_MS`) + `visibilitychange` wake
+- **Core**: `performCareAll()` (extracted from `handleCareAll`) — POST `care/all`, returns `{ok, message, processed, error, crops}`; used by manual `handleCareAll` and auto `runAutoCarePoll`
+- **Daily stat (v3.2.1)**: only `runAutoCarePoll` accumulates `processed` into `state.autoCareDaily` (Beijing-time day boundary, `hyb-farm-profit-auto-care-daily` key); manual care not counted. Shown in 自动操作 panel hint as `今日已处理 N 处 debuff`
+- **Guards**: `state.autoCareBusy` / `careBusy` / `harvesting` / `autoHarvestBusy` lock + 30s min interval
+- **localStorage keys**: `hyb-farm-profit-auto-care`, `hyb-farm-profit-auto-care-daily`
 
 ### Debuff display system
 - **Constants**: `DEBUFF_META = { thirsty: {name:"缺水",icon:"💧"}, weed: {name:"杂草",icon:"🌿"}, pest: {name:"虫害",icon:"🐛"} }`, `CROP_PLACEHOLDER_URL = "https://cdk.hybgzs.com/farm/crops/starfruit_s2.png"`
@@ -66,7 +75,8 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 ### 一键务农 (`care/all`)
 - **Endpoint**: `POST /api/farm/care/all` — no body, returns `{processed, skipped, energySpent, byKind}`
 - **Buttons** (two locations, same handler): overview hero (`.overview-care` class, outline style) and 农场情况 panel (`.inventory-sell-selected` class, filled style). Both use `data-action="care-all"`. Disabled when no crops have debuffs (`careNeeded = careCount > 0`), label shows `一键务农 (N)` when active, `务农中` while busy.
-- **Handler**: `handleCareAll(api)` → POST → `fetchCropsData({force:true})` → `renderNotice()` with `DEBUFF_META`-based message
+- **Handler**: `handleCareAll(api)` → `performCareAll()` → POST → `fetchCropsData({force:true})` → `renderNotice()` with `DEBUFF_META`-based message
+- **Shared core**: `performCareAll()` extracted for reuse by both `handleCareAll` (manual) and `runAutoCarePoll` (auto) — returns `{ok, message, error, crops}`
 - **Rendering**: centralized in `renderCareButton(careCount, careNeeded, className)` — takes className param to differentiate location styles (overview vs panel), zero HTML duplication.
 
 ### Shared notice system

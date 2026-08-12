@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Farm Helper
 // @namespace    https://cdk.hybgzs.com/
-// @version      3.1.0
+// @version      3.2.0
 // @description  轻量展示最划算的作物收益排行、全部地块成熟时间和好友农场状态。
 // @author       gcnanmu
 // @license      MIT
@@ -42,6 +42,10 @@
   const REPLANT_SEED_STORAGE_KEY = "hyb-farm-profit-replant-seed";
   const AUTO_HARVEST_MIN_INTERVAL_MS = 30000;
   const AUTO_HARVEST_POLL_MS = 60000;
+  const AUTO_CARE_STORAGE_KEY = "hyb-farm-profit-auto-care";
+  const AUTO_CARE_POLL_MS = 300000;
+  const AUTO_CARE_MIN_INTERVAL_MS = 30000;
+  const AUTO_CARE_DAILY_STORAGE_KEY = "hyb-farm-profit-auto-care-daily";
 
   /**
    * 将接口返回的作物图片相对路径转换为可直接展示的小图 URL。
@@ -123,6 +127,10 @@
     autoHarvestNoticeType: "",
     autoHarvestPanelOpen: false,
     replantSeedId: getInitialReplantSeed(),
+    autoCareEnabled: getInitialAutoCare(),
+    autoCareBusy: false,
+    lastAutoCareAt: 0,
+    autoCareDaily: getInitialAutoCareDaily(),
   };
 
   /**
@@ -181,6 +189,74 @@
     } catch {
       // 忽略存储失败。
     }
+  }
+
+  function getInitialAutoCare() {
+    try {
+      return window.localStorage.getItem(AUTO_CARE_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function saveAutoCare(enabled) {
+    try {
+      window.localStorage.setItem(AUTO_CARE_STORAGE_KEY, enabled ? "1" : "0");
+    } catch {
+      // 忽略存储失败。
+    }
+  }
+
+  /**
+   * 按北京时间返回当天日期字符串。
+   *
+   * 自动务农的每日统计以游戏时区（Asia/Shanghai）为一天边界，与成熟时间展示一致。
+   *
+   * @returns {string} `YYYY-MM-DD` 格式日期。
+   */
+  function getDailyCareDate() {
+    return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" });
+  }
+
+  /**
+   * 读取今日自动务农已处理的 debuff 总数。
+   *
+   * localStorage 记录 `{date, total}`；日期不是今天时视为新的一天，从 0 开始。
+   *
+   * @returns {number} 今日已处理数量。
+   */
+  function getInitialAutoCareDaily() {
+    try {
+      const raw = window.localStorage.getItem(AUTO_CARE_DAILY_STORAGE_KEY);
+      const data = raw ? JSON.parse(raw) : null;
+
+      if (!data || data.date !== getDailyCareDate()) {
+        return 0;
+      }
+
+      return Math.max(0, Number(data.total) || 0);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * 累加今日自动务农处理数并持久化。
+   *
+   * @param {number} processed 本次处理的数量。
+   * @returns {number} 累加后的今日总数。
+   */
+  function addAutoCareDaily(processed) {
+    const date = getDailyCareDate();
+    const total = getInitialAutoCareDaily() + Math.max(0, Number(processed) || 0);
+
+    try {
+      window.localStorage.setItem(AUTO_CARE_DAILY_STORAGE_KEY, JSON.stringify({ date, total }));
+    } catch {
+      // 忽略存储失败，内存状态仍可正常展示。
+    }
+
+    return total;
   }
 
   /**
@@ -2218,6 +2294,10 @@
           margin-bottom: 0;
         }
 
+        .auto-harvest-controls .control-row + .control-hint {
+          margin-top: 2px;
+        }
+
         .auto-harvest-controls .control-label {
           color: var(--text);
           font-size: 13px;
@@ -2437,6 +2517,16 @@
         render(api);
         if (state.autoHarvestEnabled) {
           runAutoHarvestCycle(api);
+        }
+        return;
+      }
+
+      if (event.target.matches(".auto-care-checkbox")) {
+        state.autoCareEnabled = event.target.checked;
+        saveAutoCare(state.autoCareEnabled);
+        render(api);
+        if (state.autoCareEnabled) {
+          runAutoCarePoll(api);
         }
         return;
       }
@@ -2742,6 +2832,13 @@
       }
     }
 
+    let autoCareHintText = "";
+    if (state.autoCareEnabled) {
+      const dailyPart = state.autoCareDaily > 0 ? `今日已处理 ${state.autoCareDaily} 处 debuff` : "";
+      const carePart = careCount > 0 ? `待务农 ${careCount} 块地` : "";
+      autoCareHintText = [dailyPart, carePart].filter(Boolean).join(" · ") || "地块状态正常";
+    }
+
     const replantOptions = inventory
       .map(
         (item) =>
@@ -2808,7 +2905,7 @@
       <details class="farm-status-panel" data-panel="auto-harvest" ${
         state.autoHarvestPanelOpen ? "open" : ""
       }>
-        <summary>自动收菜</summary>
+        <summary>自动操作</summary>
         <div class="auto-harvest-controls">
           <div class="control-row">
             <span class="control-label">自动收菜</span>
@@ -2825,6 +2922,14 @@
             </select>
           </div>
           <div class="control-hint">${escapeHtml(autoHarvestHintText)}</div>
+          <div class="control-row">
+            <span class="control-label">自动务农</span>
+            <label class="toggle-switch">
+              <input type="checkbox" class="auto-care-checkbox" ${state.autoCareEnabled ? "checked" : ""}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="control-hint">${escapeHtml(autoCareHintText)}</div>
         </div>
       </details>
       <details class="farm-status-panel" data-panel="inventory" ${
@@ -3763,25 +3868,11 @@
   }
 
   /**
-   * 一键务农：调用 /api/farm/care/all 处理所有地块的 debuff。
+   * 执行一键务农核心逻辑。
    *
-   * @param {object} api createRoot 返回的 DOM 引用集合。
-   * @returns {Promise<void>}
+   * @returns {Promise<{ok: boolean, message?: string, processed?: number, error?: Error, crops?: Array}>}
    */
-  async function handleCareAll(api) {
-    if (state.careBusy) {
-      return;
-    }
-
-    state = {
-      ...state,
-      farmStatusPanelOpen: true,
-      careBusy: true,
-      careNotice: "",
-      careNoticeType: "",
-    };
-    render(api);
-
+  async function performCareAll() {
     try {
       const payload = await requestJson(CARE_ALL_URL, { method: "POST" });
       const data = payload?.data || payload;
@@ -3795,13 +3886,41 @@
         : `处理 ${processed} 处异常`;
 
       const crops = await fetchCropsData({ force: true });
+      return { ok: true, message, processed, crops };
+    } catch (error) {
+      return { ok: false, message: error.message || "一键务农失败", error };
+    }
+  }
 
+  /**
+   * 一键务农：调用 /api/farm/care/all 处理所有地块的 debuff。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @returns {Promise<void>}
+   */
+  async function handleCareAll(api) {
+    if (state.careBusy || state.autoCareBusy) {
+      return;
+    }
+
+    state = {
+      ...state,
+      farmStatusPanelOpen: true,
+      careBusy: true,
+      careNotice: "",
+      careNoticeType: "",
+    };
+    render(api);
+
+    const result = await performCareAll();
+
+    if (result.ok) {
       state = {
         ...state,
-        crops,
+        crops: result.crops,
         farmStatusPanelOpen: true,
         careBusy: false,
-        careNotice: message,
+        careNotice: result.message,
         careNoticeType: "success",
         updatedAt: new Date().toLocaleTimeString("zh-CN", {
           hour: "2-digit",
@@ -3810,12 +3929,12 @@
         }),
       };
       scheduleNextCropReadyRender(api);
-    } catch (error) {
+    } else {
       state = {
         ...state,
         farmStatusPanelOpen: true,
         careBusy: false,
-        careNotice: error.message || "一键务农失败",
+        careNotice: result.message,
         careNoticeType: "error",
       };
     }
@@ -3836,7 +3955,8 @@
       state.harvesting ||
       state.inventoryRecycling ||
       state.inventoryPlanting ||
-      state.careBusy
+      state.careBusy ||
+      state.autoCareBusy
     ) {
       return;
     }
@@ -3941,6 +4061,81 @@
         lastAutoHarvestAt: now,
         autoHarvestNotice: `自动收菜异常：${error.message || "未知错误"}`,
         autoHarvestNoticeType: "error",
+      };
+    }
+
+    render(api);
+  }
+
+  /**
+   * 自动务农独立轮询：检查地块 debuff → 调用 care/all 处理。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @returns {Promise<void>}
+   */
+  async function runAutoCarePoll(api) {
+    if (
+      !state.autoCareEnabled ||
+      state.autoCareBusy ||
+      state.harvesting ||
+      state.careBusy ||
+      state.autoHarvestBusy
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - state.lastAutoCareAt < AUTO_CARE_MIN_INTERVAL_MS) {
+      return;
+    }
+
+    state = {
+      ...state,
+      autoCareBusy: true,
+    };
+    render(api);
+
+    try {
+      const crops = await fetchCropsData({ force: true });
+      const careCount = getLiveCrops()
+        .map((c) => getLiveCrop(c))
+        .filter((c) => !c.isEmpty && c.conditions.length > 0).length;
+
+      state = { ...state, crops };
+
+      if (careCount === 0) {
+        state = {
+          ...state,
+          autoCareBusy: false,
+          lastAutoCareAt: now,
+        };
+        render(api);
+        return;
+      }
+
+      const result = await performCareAll();
+
+      if (result.ok) {
+        state = {
+          ...state,
+          crops: result.crops,
+          autoCareBusy: false,
+          lastAutoCareAt: now,
+          autoCareDaily: addAutoCareDaily(result.processed),
+        };
+        scheduleNextCropReadyRender(api);
+      } else {
+        state = {
+          ...state,
+          autoCareBusy: false,
+          lastAutoCareAt: now,
+        };
+      }
+    } catch (error) {
+      state = {
+        ...state,
+        autoCareBusy: false,
+        lastAutoCareAt: now,
       };
     }
 
@@ -4079,9 +4274,14 @@
     runAutoHarvestCycle(api);
   }, AUTO_HARVEST_POLL_MS);
 
+  setInterval(() => {
+    runAutoCarePoll(api);
+  }, AUTO_CARE_POLL_MS);
+
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       runAutoHarvestCycle(api);
+      runAutoCarePoll(api);
     }
   });
 })();

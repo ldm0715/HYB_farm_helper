@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## [3.2.0] — 2026-08-12
+
+### Added
+- 自动务农：独立 5min 轮询（`AUTO_CARE_POLL_MS`）+ `visibilitychange` 唤醒，自动检测并处理地块 debuff（缺水💧/杂草🌿/虫害🐛）
+- 自动务农今日统计：仅自动务农轮询累加 `processed` 到 `state.autoCareDaily`（北京时间日界，localStorage `hyb-farm-profit-auto-care-daily`），面板提示「今日已处理 N 处 debuff」
+- `performCareAll()` 共享核心（POST `care/all`，返回 `{ok, message, processed, crops}`），手动一键务农与自动务农复用
+
+### Changed
+- 「自动收菜」面板更名为「自动操作」，新增「自动务农」开关（同款 toggle 样式 + 独立 hint）
+- 自动收菜 / 自动务农 / 手动务农互相并发互斥（guard 全部加 `autoCareBusy`）
+
 ## [3.1.0] — 2026-08-12
 
 ### Added
