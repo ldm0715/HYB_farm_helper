@@ -43,7 +43,7 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 
 **我的农场 tab** is structured as: overview hero → three collapsible `<details>` panels:
 
-- **Overview hero** (总览): focus card with big number (harvest count or next maturity `HH:mm` via `formatClock`), action buttons (一键务农 above 一键收菜, vertical stack), and a 3-grid stats strip (生长中·空地 / 待务农 / 仓库). Stats are clickable `<button class="stat-card">` elements that scroll to the corresponding panel via `data-action="scroll-to-panel"`.
+- **Overview hero** (总览): focus card with big number (harvest count or next maturity countdown via `formatCountdown`, 跨天带天档位如 `3天4小时39分钟`; 每 60s 由 `refreshCountdownDom` DOM 直更新不触发全量 render), action buttons (一键务农 above 一键收菜, vertical stack), and a 3-grid stats strip (生长中·空地 / 待务农 / 仓库). Stats are clickable `<button class="stat-card">` elements that scroll to the corresponding panel via `data-action="scroll-to-panel"`. The `overview-note` shows the exact Beijing time `MM/DD HH:mm` via `formatDateTime` for disambiguation.
 - **农场情况 panel**: plot grid + 一键务农 + 一键收菜 buttons in `.farm-care-actions`
 - **自动操作 panel**: auto-harvest toggle + replant select + auto-care toggle (独立轮询处理 debuff)
 - **我的仓库 panel**: inventory grid + 一键卖出/一键种植
@@ -97,7 +97,7 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 - Repeated buttons use shared render functions: `renderHarvestButton(readyCount)` for 一键收菜, `renderCareButton(careCount, careNeeded, className)` for 一键务农 (className param distinguishes overview outline style from panel filled style). Always use these instead of inlining button HTML.
 - Button styles shared across panels: `.inventory-sell-selected` reused by 一键务农, `.inventory-actions` layout reused by farm-care area
 - New notice features should use `renderNotice(…)` with a unique `noticeKey`; the dismiss handler automatically clears `{noticeKey}` and `{noticeKey}Type` from state
-- New format helpers: `formatClock(date)` — Beijing time `HH:mm` short format (for overview focus number)
+- New format helpers: `formatCountdown(seconds)` — remaining time countdown, 天档位跨天带 `X天Y小时Z分钟` (used by overview focus number and plot cards); `formatDateTime(date)` — Beijing time `MM/DD HH:mm` (used by overview-note and auto-harvest hint). No bare `HH:mm` clock text without a date prefix
 - Overview stats are clickable `stat-card` buttons using `data-action="scroll-to-panel"` + `data-panel`. Precise scroll targeting uses `data-scroll-anchor` on button containers (e.g. `.inventory-actions`, `.farm-care-actions`); falls back to the panel `<details>` element.
 
 ## 版本号规则

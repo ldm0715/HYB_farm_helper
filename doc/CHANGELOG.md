@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## [3.2.1] — 2026-08-12
+
+### Fixed
+- 总览 hero 焦点大数字从裸时刻 `HH:mm` 改为剩余倒计时，跨天带天档位（如 `3天4小时39分钟`），避免只显示 `04:39` 无法区分几天后（长周期作物如七色彩莲）
+- 修复自动操作 hint 用浏览器本地时区 `getHours()/getMinutes()` 拼时刻，与北京时间不一致；统一改用 `formatDateTime`（Asia/Shanghai）
+- 删除不再使用的 `formatClock`，`formatCountdown` 增加天档位并保留分钟
+
+### Changed
+- 总览 hero 副标题改为显示具体成熟时刻 `MM/DD HH:mm`（`formatDateTime`），与倒计时大数字互补
+- 倒计时每分钟由 `refreshCountdownDom` 对 `.overview-number` DOM 直更新（不触发全量 render 打断滚动），成熟瞬间仍由 `scheduleNextCropReadyRender` 切换为可收获数量
+- 「自动操作」面板补种作物选择器移到「自动务农」下方
+
 ## [3.2.0] — 2026-08-12
 
 ### Added

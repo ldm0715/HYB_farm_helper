@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Farm Helper
 // @namespace    https://cdk.hybgzs.com/
-// @version      3.2.0
+// @version      3.2.1
 // @description  轻量展示最划算的作物收益排行、全部地块成熟时间和好友农场状态。
 // @author       gcnanmu
 // @license      MIT
@@ -449,6 +449,7 @@
    * 将地块剩余时间格式化为倒计时文本。
    *
    * 小于等于 0 时视为可收获；不足 1 分钟时按 1 分钟展示，避免出现 `0分钟`。
+   * 跨天时带天档位，避免只显示小时数造成歧义（如七色彩莲可生长一周以上）。
    *
    * @param {number} seconds 剩余秒数。
    * @returns {string} 倒计时文本或 `可收获`。
@@ -458,8 +459,13 @@
       return "可收获";
     }
 
-    const hours = Math.floor(seconds / 3600);
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
+
+    if (days > 0) {
+      return `${days}天${hours}小时${minutes}分钟`;
+    }
 
     if (hours > 0) {
       return `${hours}小时${minutes}分钟`;
@@ -485,25 +491,6 @@
       timeZone: "Asia/Shanghai",
       month: "2-digit",
       day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-  }
-
-  /**
-   * 将 UTC 时间对象格式化为北京时间短时分。
-   *
-   * @param {Date | null} date 成熟时间。
-   * @returns {string} 北京时间的 `HH:mm` 文本，非法日期返回 `未知时间`。
-   */
-  function formatClock(date) {
-    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-      return "未知时间";
-    }
-
-    return date.toLocaleString("zh-CN", {
-      timeZone: "Asia/Shanghai",
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
@@ -604,6 +591,33 @@
         runAutoHarvestCycle(api);
       }
     }, Math.max(0, nextDelay) + 250);
+  }
+
+  /**
+   * 每分钟直接更新 hero 焦点数字的倒计时文本。
+   *
+   * 只在面板展开且停留在我的农场页、且当前没有可收获作物时生效，避免倒计时过期。
+   * 用 DOM 直更新避免触发全量 render 打断用户滚动；成熟瞬间仍由
+   * `scheduleNextCropReadyRender` 触发全量 render 切换为可收获数量。
+   *
+   * @param {object} api createRoot 返回的 DOM 引用集合。
+   * @returns {void}
+   */
+  function refreshCountdownDom(api) {
+    if (!state.expanded || state.page !== "crops") {
+      return;
+    }
+
+    const planted = getLiveCrops().filter((crop) => !crop.isEmpty);
+    const readyCount = planted.filter((crop) => crop.isMature).length;
+    const nextCrop = planted.find((crop) => !crop.isMature);
+    const numberEl = api.body?.querySelector?.(".overview-number");
+
+    if (readyCount > 0 || !nextCrop || !numberEl) {
+      return;
+    }
+
+    numberEl.textContent = formatCountdown(nextCrop.remainingTime);
   }
 
   /**
@@ -2814,14 +2828,13 @@
         const diffMs = nextMaturesAt.getTime() - Date.now();
         if (diffMs <= 0) {
           const plantAt = new Date(Date.now() + 10000);
-          const plantTime = `${String(plantAt.getHours()).padStart(2, "0")}:${String(plantAt.getMinutes()).padStart(2, "0")}`;
-          autoHarvestHintText = `预计收菜：现在 / 预计补种：${plantTime}`;
+          autoHarvestHintText = `预计收菜：现在 / 预计补种：${formatDateTime(plantAt)}`;
         } else {
           const h = Math.floor(diffMs / 3600000);
           const m = Math.floor((diffMs % 3600000) / 60000);
-          const time = `${String(nextMaturesAt.getHours()).padStart(2, "0")}:${String(nextMaturesAt.getMinutes()).padStart(2, "0")}`;
+          const time = formatDateTime(nextMaturesAt);
           const plantAt = new Date(nextMaturesAt.getTime() + 10000);
-          const plantTime = `${String(plantAt.getHours()).padStart(2, "0")}:${String(plantAt.getMinutes()).padStart(2, "0")}`;
+          const plantTime = formatDateTime(plantAt);
           autoHarvestHintText = h > 0
             ? `预计收菜：${time} / 预计补种：${plantTime}（${h}小时${m}分钟后）`
             : `预计收菜：${time} / 预计补种：${plantTime}（${m}分钟后）`;
@@ -2862,12 +2875,12 @@
       <section class="hero">
         <div class="overview-focus">
           <div class="hero-label">${readyCount > 0 ? "现在可以收获" : heroCrop ? "下一块成熟" : "暂无种植"}</div>
-          <div class="overview-number ${readyCount > 0 ? "ready" : ""}">${readyCount > 0 ? readyCount : heroCrop ? formatClock(heroCrop.maturesAt) : "\u2014"}</div>
+          <div class="overview-number ${readyCount > 0 ? "ready" : ""}">${readyCount > 0 ? readyCount : heroCrop ? formatCountdown(heroCrop.remainingTime) : "\u2014"}</div>
           <div class="overview-note">${
             readyCount > 0
               ? `最近成熟 ${formatDateTime(heroCrop.maturesAt)}`
               : heroCrop
-                ? `第 ${heroCrop.plotIndex + 1} 块地 · ${escapeHtml(heroCrop.seedName)} · 剩余 ${formatCountdown(heroCrop.remainingTime)}`
+                ? `第 ${heroCrop.plotIndex + 1} 块地 · ${escapeHtml(heroCrop.seedName)} · ${formatDateTime(heroCrop.maturesAt)}`
                 : "农场情况中仍会显示空地"
           }</div>
         </div>
@@ -4277,6 +4290,10 @@
   setInterval(() => {
     runAutoCarePoll(api);
   }, AUTO_CARE_POLL_MS);
+
+  setInterval(() => {
+    refreshCountdownDom(api);
+  }, 60000);
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
