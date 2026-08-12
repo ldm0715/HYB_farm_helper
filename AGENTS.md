@@ -6,9 +6,9 @@ Tampermonkey userscript + Node CLI helper for HYB Farm (黑与白农场). Pure J
 
 - **Main artifact**: `Tampermonkey/farm-profit-ranking.user.js` (single IIFE, Shadow DOM UI)
 - **CLI**: `script/crop-profit-ranking.js` (uses `cli-table3`)
-- **Docs**: `doc/api.md` (API contracts), `doc/implement.md` (impl details), `doc/auto-harvest-plan.md`, `doc/debuff-display-plan.md`
-- **Audit**: `audit-report-hyubai-farm-ranking-2026-06-11.md` (known issues, fix roadmap)
-- **Refactor preview**: `Tampermonkey/refactor.js`, `doc/refactory.md`
+- **Docs**: `doc/api.md` (API contracts), `doc/implement.md` (impl details), `doc/CHANGELOG.md` (version history)
+- **Archive**: `doc/archive/auto-harvest-plan.md`, `doc/archive/debuff-display-plan.md`, `doc/archive/refactory.md`
+- **Refactor preview**: `Tampermonkey/refactor.js`
 - **Also read**: `.claude/CLAUDE.md` (communication rules, git rules, red-line ops)
 
 ## Commands
