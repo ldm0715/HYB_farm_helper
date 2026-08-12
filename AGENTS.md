@@ -66,6 +66,15 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 - **Guards**: `state.autoCareBusy` / `careBusy` / `harvesting` / `autoHarvestBusy` lock + 30s min interval
 - **localStorage keys**: `hyb-farm-profit-auto-care`, `hyb-farm-profit-auto-care-daily`
 
+### Material Symbols icon system (v3.2.6+)
+Header buttons, trigger, and notice-close use Google Material Symbols glyphs with an emoji fallback:
+- **Constants**: `MATERIAL_SYMBOLS_FONT_URL` (woff2 served from `gstatic.loli.net` — a China-accessible mirror; `fonts.googleapis.com` is blocked in CN, do NOT revert) + `MATERIAL_SYMBOLS_FONT_FAMILY` (`"Material Symbols Outlined"`)
+- **CRITICAL**: @font-face declared inside the Shadow DOM `<style>` does **NOT** load in Chromium on real pages (silently renders the ligature text, e.g. "light_mode"). Fonts must be loaded via `new FontFace(...).load()` → `document.fonts.add()` in `createRoot`. Do not reintroduce a shadow `<style>` @font-face or a `<link>` in the shadow root.
+- **Dual-state CSS**: `.material-symbols-outlined` is `display:none` by default and `.emoji-fallback` shown; `:host(.icons-ready)` swaps them. The class is added only after the font actually loads — failure keeps emoji so the UI is never blank.
+- **Button pattern**: every icon button carries two spans `<span class="material-symbols-outlined">glyph</span><span class="emoji-fallback">emoji</span>`. JS swaps the **span's** `textContent` (e.g. `dark_mode`↔`light_mode`), never the button's.
+- **Glyphs in use**: theme `dark_mode`/`light_mode`, refresh `refresh`, close `close`, trigger `paid`/`close`, notice-close `close`.
+- **Exceptions**: debuff icons (💧🌿🐛) stay plain emoji and are rendered WITHOUT the `.emoji-fallback` class (so they show regardless of `.icons-ready`); crop images are `<img>`, not glyphs.
+
 ### Debuff display system
 - **Constants**: `DEBUFF_META = { thirsty: {name:"缺水",icon:"💧"}, weed: {name:"杂草",icon:"🌿"}, pest: {name:"虫害",icon:"🐛"} }`, `CROP_PLACEHOLDER_URL = "https://cdk.hybgzs.com/farm/crops/starfruit_s2.png"`
 - **Normalization**: `normalizeCrops` maps raw API `conditions: [{kind:"thirsty"}]` → `conditions: [{kind, name, icon}]` (filtered through `DEBUFF_META`, unknown kinds dropped)
@@ -92,9 +101,10 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 - API constants centralized near top of script
 - `@match` and `@connect` scoped to `cdk.hybgzs.com` only
 - Historical `.user-v*.js` files are archives; only `farm-profit-ranking.user.js` is active
-- Refresh button uses `🔄` emoji — do NOT set `api.refresh.textContent` (it was removed)
+- Refresh button is a static icon (Material `refresh` + `🔄` fallback) — do NOT set `api.refresh.textContent` (it was removed)
+- Header layout: title left, `.actions` group (theme-toggle / refresh / close, all 32px icon buttons) right-aligned via flex `justify-content: space-between`
 - UI controls inside `innerHTML` bodies use body event delegation, not direct element bindings
-- Repeated buttons use shared render functions: `renderHarvestButton(readyCount)` for 一键收菜, `renderCareButton(careCount, careNeeded, className)` for 一键务农 (className param distinguishes overview outline style from panel filled style). Always use these instead of inlining button HTML.
+- Repeated buttons use shared render functions: `renderHarvestButton(readyCount)` for 一键收菜, `renderCareButton(careCount, careNeeded, className)` for 一键务农. Overview hero buttons (`.overview-action .harvest-all`, `.overview-action .overview-care`) are BOTH outline style (white/transparent bg + themed border); panel buttons (`.farm-care-actions` context) are filled (`.inventory-sell-selected`). Always use these render functions instead of inlining button HTML.
 - Button styles shared across panels: `.inventory-sell-selected` reused by 一键务农, `.inventory-actions` layout reused by farm-care area
 - New notice features should use `renderNotice(…)` with a unique `noticeKey`; the dismiss handler automatically clears `{noticeKey}` and `{noticeKey}Type` from state
 - New format helpers: `formatCountdown(seconds)` — remaining time countdown, 天档位跨天带 `X天Y小时Z分钟` (used by overview focus number and plot cards); `formatDateTime(date)` — Beijing time `MM/DD HH:mm` (used by overview-note and auto-harvest hint). No bare `HH:mm` clock text without a date prefix
@@ -118,9 +128,10 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 1. **`npm run rank` is broken** — correct path is `node script/crop-profit-ranking.js`
 2. **No tests** — all validation is manual via README checklist or browser smoke testing
 3. **`conditions` field is NOT `string[]`**: API returns objects `{kind: "thirsty"}`. `normalizeCrops` maps them to `{kind, name, icon}` via `DEBUFF_META`. Don't call `.join("、")` on raw conditions.
-4. **`normalizeFriendFarm`**: friend with `firstCrop === null` is wrongly marked stealable
-5. **`fetchFriendStatuses`** uses unbounded `Promise.all` — one failure rejects entire friends page
-6. **Mutation paths** (harvest/recycle/plant/steal/auto-harvest/care) change server state with zero automated coverage
-7. **Background refresh failures** (`refreshCropStatus`) silently swallowed — no stale indicator
-8. **`cookie.txt`** is gitignored but still in repo root — easy to leak via zip/screenshot
-9. **npm audit** must use official registry (`--registry=https://registry.npmjs.org`) — configured mirror doesn't support audit
+4. **Icon font MUST load via FontFace API**: shadow-root `@font-face` (in `<style>` or via `<link>`) silently fails to load in Chromium on the real game page — icons render as raw ligature text (`light_mode`). This is verified behavior; do not "simplify" back to CSS `@font-face`.
+5. **`normalizeFriendFarm`**: friend with `firstCrop === null` is wrongly marked stealable
+6. **`fetchFriendStatuses`** uses unbounded `Promise.all` — one failure rejects entire friends page
+7. **Mutation paths** (harvest/recycle/plant/steal/auto-harvest/care) change server state with zero automated coverage
+8. **Background refresh failures** (`refreshCropStatus`) silently swallowed — no stale indicator
+9. **`cookie.txt`** is gitignored but still in repo root — easy to leak via zip/screenshot
+10. **npm audit** must use official registry (`--registry=https://registry.npmjs.org`) — configured mirror doesn't support audit

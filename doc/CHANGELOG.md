@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## [3.2.8] — 2026-08-12
+
+### Added
+- Material Symbols 图标系统：header 按钮（主题切换 / 刷新 / 关闭）、悬浮 trigger、notice 关闭按钮改用 Google Material Symbols 字形，均保留 emoji 回退（图标字体加载失败时自动回落 emoji，界面不空白）
+- 图标字体经 FontFace API 加载（`MATERIAL_SYMBOLS_FONT_URL`，gstatic.loli.net 中国镜像），`.icons-ready` 门控字形 / emoji 切换
+
+### Changed
+- 总览「一键收菜」改为与「一键务农」一致的描边样式（仅总览作用域，农场情况面板按钮保持实心）
+- 总览「一键务农」补全暗色模式描边适配：描边色 `rgba(34,166,111,.35)`、禁用态文字色 `#64748b`
+- header 布局：主题切换 / 刷新 / 关闭三个按钮统一右侧 `.actions` 组排列（flex space-between），标题居左
+- 刷新按钮统一为 32px 方块图标按钮（移除残留的内边距）
+- 悬浮 trigger 图标由 `$`/`×` 改为 Material `paid`/`close`（保留 emoji 回退）
+- debuff 地块图标保持 emoji（💧🌿🐛），不走 Material 字形
+
 ## [3.2.1] — 2026-08-12
 
 ### Fixed

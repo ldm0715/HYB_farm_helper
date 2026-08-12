@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Farm Helper
 // @namespace    https://cdk.hybgzs.com/
-// @version      3.2.1
+// @version      3.2.8
 // @description  轻量展示最划算的作物收益排行、全部地块成熟时间和好友农场状态。
 // @author       gcnanmu
 // @license      MIT
@@ -33,6 +33,9 @@
     pest: { name: "虫害", icon: "🐛" },
   };
   const CROP_PLACEHOLDER_URL = "https://cdk.hybgzs.com/farm/crops/starfruit_s2.png";
+  const MATERIAL_SYMBOLS_FONT_URL =
+    "https://gstatic.loli.net/s/materialsymbolsoutlined/v364/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzByHX9rA6RzaxHMPdY43zj-jCxv3fzvRNO1Q.woff2";
+  const MATERIAL_SYMBOLS_FONT_FAMILY = "Material Symbols Outlined";
   const STEAL_COOLDOWN_MS = 5000;
   const RECYCLE_MAX_SLIPPAGE_BPS = 300;
   const PRICE_DIVISOR = 500000;
@@ -1077,6 +1080,11 @@
           line-height: 1;
         }
 
+        .trigger .material-symbols-outlined {
+          font-size: 22px;
+          line-height: 1;
+        }
+
         .trigger.has-ready-crops {
           border-color: rgba(183, 121, 31, 0.36);
           background: #d99a1e;
@@ -1119,6 +1127,47 @@
 
         .hidden {
           display: none !important;
+        }
+
+        .material-symbols-outlined {
+          font-family: "${MATERIAL_SYMBOLS_FONT_FAMILY}";
+          font-weight: normal;
+          font-style: normal;
+          line-height: 1;
+          letter-spacing: normal;
+          text-transform: none;
+          white-space: nowrap;
+          word-wrap: normal;
+          direction: ltr;
+          font-feature-settings: "liga";
+          -webkit-font-feature-settings: "liga";
+          -webkit-font-smoothing: antialiased;
+        }
+
+        :host .material-symbols-outlined {
+          display: none;
+        }
+
+        .emoji-fallback {
+          display: inline-block;
+        }
+
+        :host(.icons-ready) .material-symbols-outlined {
+          display: inline-block;
+        }
+
+        :host(.icons-ready) .emoji-fallback {
+          display: none;
+        }
+
+        .icon-btn .material-symbols-outlined,
+        .refresh .material-symbols-outlined {
+          font-size: 20px;
+          line-height: 1;
+        }
+
+        .notice-close .material-symbols-outlined {
+          font-size: 14px;
         }
 
         .header {
@@ -1194,9 +1243,6 @@
         }
 
         .refresh {
-          padding: 0 10px;
-          font-size: 13px;
-          font-weight: 650;
           width: 32px;
           display: grid;
           place-items: center;
@@ -1452,6 +1498,29 @@
           height: 36px;
           padding: 0 16px;
           font-size: 13px;
+          border: 1px solid rgba(19, 138, 91, 0.28);
+          border-radius: 7px;
+          background: #fff;
+          color: var(--accent-strong);
+          cursor: pointer;
+          font-weight: 750;
+        }
+
+        :host(.theme-dark) .overview-action .harvest-all {
+          background: transparent;
+          border-color: rgba(34, 166, 111, 0.35);
+        }
+
+        .overview-action .harvest-all:disabled {
+          border-color: var(--line);
+          background: #eef2f6;
+          color: #98a2b3;
+          cursor: not-allowed;
+        }
+
+        :host(.theme-dark) .overview-action .harvest-all:disabled {
+          background: transparent;
+          color: #64748b;
         }
 
         .overview-action .overview-care {
@@ -1468,6 +1537,7 @@
 
         :host(.theme-dark) .overview-action .overview-care {
           background: transparent;
+          border-color: rgba(34, 166, 111, 0.35);
         }
 
         .overview-action .overview-care:disabled {
@@ -1479,6 +1549,7 @@
 
         :host(.theme-dark) .overview-action .overview-care:disabled {
           background: transparent;
+          color: #64748b;
         }
 
         .hero-stats {
@@ -2393,7 +2464,7 @@
           background: #172033;
         }
       </style>
-      <button class="trigger" type="button" title="黑与白农场小助手" aria-label="打开黑与白农场小助手">$</button>
+          <button class="trigger" type="button" title="黑与白农场小助手" aria-label="打开黑与白农场小助手"><span class="material-symbols-outlined">paid</span><span class="emoji-fallback">$</span></button>
       <section class="panel hidden" aria-label="黑与白农场小助手">
         <div class="header">
           <div class="title">
@@ -2401,9 +2472,9 @@
             <span class="status">等待加载</span>
           </div>
           <div class="actions">
-            <button class="icon-btn theme-toggle" type="button" title="切换暗色主题" aria-label="切换暗色主题">🌙</button>
-            <button class="refresh" type="button" title="刷新" aria-label="刷新">🔄</button>
-            <button class="icon-btn close" type="button" title="收起" aria-label="收起">×</button>
+            <button class="icon-btn theme-toggle" type="button" title="切换暗色主题" aria-label="切换暗色主题"><span class="material-symbols-outlined">dark_mode</span><span class="emoji-fallback">🌙</span></button>
+            <button class="refresh" type="button" title="刷新" aria-label="刷新"><span class="material-symbols-outlined">refresh</span><span class="emoji-fallback">🔄</span></button>
+            <button class="icon-btn close" type="button" title="收起" aria-label="收起"><span class="material-symbols-outlined">close</span><span class="emoji-fallback">×</span></button>
           </div>
         </div>
         <div class="tabs">
@@ -2420,6 +2491,24 @@
         <div class="body"></div>
       </section>
     `;
+
+    const enableIcons = () => host.classList.add("icons-ready");
+    if (window.FontFace && document.fonts) {
+      new FontFace(MATERIAL_SYMBOLS_FONT_FAMILY, `url(${MATERIAL_SYMBOLS_FONT_URL})`)
+        .load()
+        .then(
+          (loaded) => {
+            document.fonts.add(loaded);
+            enableIcons();
+          },
+          () => {},
+        );
+    } else {
+      const fontFaceStyle = document.createElement("style");
+      fontFaceStyle.textContent = `@font-face { font-family: "${MATERIAL_SYMBOLS_FONT_FAMILY}"; src: url(${MATERIAL_SYMBOLS_FONT_URL}) format("woff2"); font-weight: 100 700; font-display: block; }`;
+      document.head.appendChild(fontFaceStyle);
+      enableIcons();
+    }
 
     const api = {
       host,
@@ -2656,12 +2745,18 @@
     const isDarkTheme = state.theme === "dark";
     api.host.classList.toggle("theme-dark", isDarkTheme);
     api.panel.classList.toggle("hidden", !state.expanded);
-    api.trigger.textContent = state.expanded ? "×" : "$";
+    const triggerIcon = api.trigger.querySelector(".material-symbols-outlined");
+    const triggerEmoji = api.trigger.querySelector(".emoji-fallback");
+    if (triggerIcon) triggerIcon.textContent = state.expanded ? "close" : "paid";
+    if (triggerEmoji) triggerEmoji.textContent = state.expanded ? "×" : "$";
     // 悬浮按钮承担成熟提醒职责：有成熟作物时金黄色，收获后随 crops 状态恢复绿色。
     api.trigger.classList.toggle("has-ready-crops", readyCrops);
     api.trigger.title = readyCrops ? "有作物可以收获" : "黑与白农场小助手";
     api.trigger.setAttribute("aria-label", readyCrops ? "打开黑与白农场小助手，有作物可以收获" : "打开黑与白农场小助手");
-    api.themeToggle.textContent = isDarkTheme ? "☀️" : "🌙";
+    const themeIcon = api.themeToggle.querySelector(".material-symbols-outlined");
+    const themeEmoji = api.themeToggle.querySelector(".emoji-fallback");
+    if (themeIcon) themeIcon.textContent = isDarkTheme ? "light_mode" : "dark_mode";
+    if (themeEmoji) themeEmoji.textContent = isDarkTheme ? "☀️" : "🌙";
     api.themeToggle.title = isDarkTheme ? "切换浅色主题" : "切换暗色主题";
     api.themeToggle.setAttribute("aria-label", isDarkTheme ? "切换浅色主题" : "切换暗色主题");
     api.refresh.disabled = state.loading;
@@ -2765,7 +2860,7 @@
     return `
       <div class="notice ${type === "error" ? "error" : ""}">
         <span class="notice-text">${escapeHtml(message)}</span>
-        <button type="button" class="notice-close" data-action="dismiss-notice" data-notice-key="${noticeKey}" aria-label="关闭提示">×</button>
+        <button type="button" class="notice-close" data-action="dismiss-notice" data-notice-key="${noticeKey}" aria-label="关闭提示"><span class="material-symbols-outlined">close</span><span class="emoji-fallback">×</span></button>
       </div>`;
   }
 
