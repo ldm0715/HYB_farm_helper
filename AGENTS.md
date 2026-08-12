@@ -39,7 +39,16 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 `requestJson()` wraps `GM_xmlhttpRequest` with 15s timeout, `anonymous: false` to carry browser cookies. 13 endpoints all under `https://cdk.hybgzs.com/api/farm/`. Price normalization: `real_price = api_value / 500000` (`PRICE_DIVISOR`).
 
 ### Three tabs (plus panels)
-收益排行 / 我的农场 / 好友农场 — event delegation on `.body`, tab selection in `state.page`. 我的农场 tab contains collapsible `<details>` panels: 农场情况 (with 一键务农 button and plot grid), 自动收菜, 我的仓库 (with 一键卖出/一键种植).
+收益排行 / 我的农场 / 好友农场 — event delegation on `.body`, tab selection in `state.page`.
+
+**我的农场 tab** is structured as: overview hero → three collapsible `<details>` panels:
+
+- **Overview hero** (总览): focus card with big number (harvest count or next maturity `HH:mm` via `formatClock`), action buttons (一键务农 above 一键收菜, vertical stack), and a 3-grid stats strip (生长中·空地 / 待务农 / 仓库). Stats are clickable `<button class="stat-card">` elements that scroll to the corresponding panel via `data-action="scroll-to-panel"`.
+- **农场情况 panel**: plot grid + 一键务农 + 一键收菜 buttons in `.farm-care-actions`
+- **自动收菜 panel**: auto-harvest toggle + replant select
+- **我的仓库 panel**: inventory grid + 一键卖出/一键种植
+
+**Scroll-to-panel**: event handler opens the target `<details>` panel by setting `state.*PanelOpen`, re-renders, then `scrollIntoView({smooth})`. Uses `data-scroll-anchor` attribute on button containers for precise targeting (e.g. `.inventory-actions`, `.farm-care-actions`); falls back to the panel element when no anchor exists.
 
 ### Auto-harvest system (v3.0.0)
 - **Trigger**: maturity `cropReadyTimer` fires → `runAutoHarvestCycle(api)` + 60s polling fallback + `visibilitychange` wake
@@ -56,8 +65,9 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 
 ### 一键务农 (`care/all`)
 - **Endpoint**: `POST /api/farm/care/all` — no body, returns `{processed, skipped, energySpent, byKind}`
-- **Button**: in 农场情况 panel bottom, reuses `.inventory-sell-selected` class. Disabled when no crops have debuffs (`careNeeded = careCount > 0`), label shows `一键务农 (N)` when active, `务农中` while busy
+- **Buttons** (two locations, same handler): overview hero (`.overview-care` class, outline style) and 农场情况 panel (`.inventory-sell-selected` class, filled style). Both use `data-action="care-all"`. Disabled when no crops have debuffs (`careNeeded = careCount > 0`), label shows `一键务农 (N)` when active, `务农中` while busy.
 - **Handler**: `handleCareAll(api)` → POST → `fetchCropsData({force:true})` → `renderNotice()` with `DEBUFF_META`-based message
+- **Rendering**: centralized in `renderCareButton(careCount, careNeeded, className)` — takes className param to differentiate location styles (overview vs panel), zero HTML duplication.
 
 ### Shared notice system
 - **Helper**: `renderNotice(message, type, noticeKey)` — produces `<div class="notice">` with an X close button (`data-action="dismiss-notice"`). Returns `""` when message is empty.
@@ -74,8 +84,24 @@ Single mutable global `state` object. All handlers mutate `state` directly then 
 - Historical `.user-v*.js` files are archives; only `farm-profit-ranking.user.js` is active
 - Refresh button uses `🔄` emoji — do NOT set `api.refresh.textContent` (it was removed)
 - UI controls inside `innerHTML` bodies use body event delegation, not direct element bindings
+- Repeated buttons use shared render functions: `renderHarvestButton(readyCount)` for 一键收菜, `renderCareButton(careCount, careNeeded, className)` for 一键务农 (className param distinguishes overview outline style from panel filled style). Always use these instead of inlining button HTML.
 - Button styles shared across panels: `.inventory-sell-selected` reused by 一键务农, `.inventory-actions` layout reused by farm-care area
 - New notice features should use `renderNotice(…)` with a unique `noticeKey`; the dismiss handler automatically clears `{noticeKey}` and `{noticeKey}Type` from state
+- New format helpers: `formatClock(date)` — Beijing time `HH:mm` short format (for overview focus number)
+- Overview stats are clickable `stat-card` buttons using `data-action="scroll-to-panel"` + `data-panel`. Precise scroll targeting uses `data-scroll-anchor` on button containers (e.g. `.inventory-actions`, `.farm-care-actions`); falls back to the panel `<details>` element.
+
+## 版本号规则
+
+- 遵循 SemVer（语义化版本）`MAJOR.MINOR.PATCH`，与 Conventional Commits 联动：
+  - 小修小补（`fix:` 等，无新功能）→ PATCH +1（最后一位）
+  - 新功能（`feat:`，非革命性）→ MINOR +1（中间位）
+  - 重大/破坏性变更（`!` 或 BREAKING）→ MAJOR +1（首位，由用户决定）
+- 混合模式：
+  - userscript `@version` 每次改动顺手 +1（Tampermonkey 靠它检测更新）
+  - CHANGELOG 补条目 + 正式发版：攒到里程碑集中做，集中定大版本
+- 发版时机由用户显式触发：agent 每次改动只机械执行 `@version` +1，不做任何发版动作；用户明确说「发版 / 更新 CHANGELOG」时 agent 才补 CHANGELOG、定大版本。agent 检测到破坏性变更只提示用户，不擅自 bump MAJOR
+- 版本号记录位置：userscript `@version` + `doc/CHANGELOG.md`（发布时同步）
+- `package.json` 版本号不维护，以 userscript `@version` 为准（当前已脱节，不影响使用）
 
 ## Known sharp edges
 

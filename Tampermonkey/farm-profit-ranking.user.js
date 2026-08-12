@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Farm Helper
 // @namespace    https://cdk.hybgzs.com/
-// @version      3.0.0
+// @version      3.1.0
 // @description  轻量展示最划算的作物收益排行、全部地块成熟时间和好友农场状态。
 // @author       gcnanmu
 // @license      MIT
@@ -409,6 +409,25 @@
       timeZone: "Asia/Shanghai",
       month: "2-digit",
       day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+
+  /**
+   * 将 UTC 时间对象格式化为北京时间短时分。
+   *
+   * @param {Date | null} date 成熟时间。
+   * @returns {string} 北京时间的 `HH:mm` 文本，非法日期返回 `未知时间`。
+   */
+  function formatClock(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      return "未知时间";
+    }
+
+    return date.toLocaleString("zh-CN", {
+      timeZone: "Asia/Shanghai",
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
@@ -1270,6 +1289,118 @@
           cursor: not-allowed;
         }
 
+        .stat-card {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          padding: 6px 8px;
+          border: 0;
+          border-radius: 6px;
+          background: transparent;
+          cursor: pointer;
+          text-align: left;
+          font: inherit;
+          color: inherit;
+        }
+
+        .stat-card:hover {
+          background: rgba(31, 143, 95, 0.08);
+        }
+
+        .stat-card .stat-value {
+          font-size: 15px;
+          font-weight: 800;
+          color: var(--text);
+          font-variant-numeric: tabular-nums;
+        }
+
+        .stat-card .stat-label {
+          font-size: 11px;
+          color: var(--muted);
+          font-weight: 700;
+        }
+
+        .stat-card.ready .stat-value {
+          color: var(--accent-strong);
+        }
+
+        .stat-card.warn .stat-value {
+          color: var(--warn);
+        }
+
+        .overview-focus {
+          min-width: 0;
+        }
+
+        .overview-number {
+          font-size: 44px;
+          line-height: 48px;
+          font-weight: 800;
+          color: var(--text);
+          font-variant-numeric: tabular-nums;
+        }
+
+        .overview-number.ready {
+          color: var(--accent-strong);
+        }
+
+        .overview-note {
+          color: var(--muted);
+          font-size: 12px;
+          margin-top: 4px;
+        }
+
+        .overview-action {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 8px;
+          justify-content: center;
+        }
+
+        .overview-action .harvest-all {
+          height: 36px;
+          padding: 0 16px;
+          font-size: 13px;
+        }
+
+        .overview-action .overview-care {
+          height: 36px;
+          padding: 0 16px;
+          font-size: 13px;
+          border: 1px solid rgba(19, 138, 91, 0.28);
+          border-radius: 7px;
+          background: #fff;
+          color: var(--accent-strong);
+          cursor: pointer;
+          font-weight: 750;
+        }
+
+        :host(.theme-dark) .overview-action .overview-care {
+          background: transparent;
+        }
+
+        .overview-action .overview-care:disabled {
+          border-color: var(--line);
+          background: #eef2f6;
+          color: #98a2b3;
+          cursor: not-allowed;
+        }
+
+        :host(.theme-dark) .overview-action .overview-care:disabled {
+          background: transparent;
+        }
+
+        .hero-stats {
+          grid-column: 1 / -1;
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+          margin-top: 4px;
+          padding-top: 10px;
+          border-top: 1px solid var(--line);
+        }
+
         :host(.theme-dark) .harvest-all:disabled,
         :host(.theme-dark) .friend-action:disabled {
           background: #1f2937;
@@ -1355,10 +1486,16 @@
         .farm-care-actions {
           display: flex;
           justify-content: flex-end;
+          gap: 8px;
           padding: 0 8px 8px;
         }
 
         .farm-care-actions .inventory-sell-selected {
+          height: 28px;
+          padding: 0 10px;
+        }
+
+        .farm-care-actions .harvest-all {
           height: 28px;
           padding: 0 10px;
         }
@@ -2018,6 +2155,16 @@
             justify-content: flex-start;
           }
 
+          .overview-number {
+            font-size: 34px;
+            line-height: 38px;
+          }
+
+          .overview-action {
+            justify-content: flex-start;
+            align-items: flex-start;
+          }
+
           .crop-card {
             grid-template-columns: 32px 32px minmax(0, 1fr);
           }
@@ -2254,6 +2401,23 @@
 
       if (button.dataset.action === "care-all" && !button.disabled) {
         handleCareAll(api);
+        return;
+      }
+
+      if (button.dataset.action === "scroll-to-panel") {
+        const panel = button.dataset.panel;
+        if (panel === "farm-status") {
+          state.farmStatusPanelOpen = true;
+        } else if (panel === "inventory") {
+          state.inventoryPanelOpen = true;
+          state.inventorySelectMode = false;
+        }
+        render(api);
+        const anchor = api.body.querySelector(`[data-scroll-anchor="${panel}"]`);
+        const el = anchor || api.body.querySelector(`[data-panel="${panel}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
         return;
       }
 
@@ -2501,6 +2665,26 @@
       </div>`;
   }
 
+  function renderHarvestButton(readyCount) {
+    return `
+    <button class="harvest-all" type="button" data-action="harvest-all" ${
+      readyCount > 0 && !state.harvesting ? "" : "disabled"
+    }>
+      ${state.harvesting ? "收菜中" : readyCount > 0 ? `一键收菜 (${readyCount})` : "一键收菜"}
+    </button>
+  `;
+  }
+
+  function renderCareButton(careCount, careNeeded, className = "") {
+    return `
+    <button class="${className} farm-care-all" type="button" data-action="care-all" ${
+      state.careBusy || !careNeeded ? "disabled" : ""
+    }>
+      ${state.careBusy ? "务农中" : careNeeded ? `一键务农 (${careCount})` : "一键务农"}
+    </button>
+  `;
+  }
+
   /**
    * 渲染成熟时间页。
    *
@@ -2522,6 +2706,12 @@
     const readyCount = plantedCrops.filter((crop) => crop.isMature).length;
     const nextCrop = plantedCrops.find((crop) => !crop.isMature);
     const heroCrop = readyCount > 0 ? plantedCrops.find((crop) => crop.isMature) : nextCrop;
+    const growingCount = plantedCrops.filter((crop) => !crop.isMature).length;
+    const emptyCount = crops.filter((crop) => crop.isEmpty).length;
+    const totalInventoryValue = inventory.reduce(
+      (sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.recyclePrice) || 0),
+      0,
+    );
     const autoHarvestNoticeHtml = renderNotice(state.autoHarvestNotice, state.autoHarvestNoticeType, "autoHarvestNotice");
 
     let autoHarvestHintText = "";
@@ -2573,33 +2763,34 @@
 
     api.body.innerHTML = `
       <section class="hero">
-        <div>
+        <div class="overview-focus">
           <div class="hero-label">${readyCount > 0 ? "现在可以收获" : heroCrop ? "下一块成熟" : "暂无种植"}</div>
-          <div class="hero-name">
-            ${heroCrop ? renderCropIcon(heroCrop.iconUrl, heroCrop.seedName) : ""}
-            <strong>${escapeHtml(readyCount > 0 ? `${readyCount} 块地可收获` : heroCrop ? heroCrop.seedName : "暂无种植中的作物")}</strong>
-            ${readyCount > 0 ? '<span class="badge yes">可收获</span>' : ""}
-          </div>
-          <div class="hero-sub">
-            ${
-              readyCount > 0
-                ? `最前面显示成熟地块 · 最近成熟记录 ${formatDateTime(heroCrop.maturesAt)}`
-                : heroCrop
-                  ? `第 ${heroCrop.plotIndex + 1} 块地 · 剩余 ${formatCountdown(heroCrop.remainingTime)}`
-                  : "农场情况中仍会显示空地"
-            }
-          </div>
+          <div class="overview-number ${readyCount > 0 ? "ready" : ""}">${readyCount > 0 ? readyCount : heroCrop ? formatClock(heroCrop.maturesAt) : "\u2014"}</div>
+          <div class="overview-note">${
+            readyCount > 0
+              ? `最近成熟 ${formatDateTime(heroCrop.maturesAt)}`
+              : heroCrop
+                ? `第 ${heroCrop.plotIndex + 1} 块地 · ${escapeHtml(heroCrop.seedName)} · 剩余 ${formatCountdown(heroCrop.remainingTime)}`
+                : "农场情况中仍会显示空地"
+          }</div>
         </div>
-        <div class="hero-money">
-          <strong>${readyCount > 0 ? "现在" : heroCrop ? formatDateTime(heroCrop.maturesAt) : "-"}</strong>
-          <span>${readyCount > 0 ? "可收获" : heroCrop ? "北京时间成熟" : "等待种植"}</span>
-          <div class="hero-actions">
-            <button class="harvest-all" type="button" data-action="harvest-all" ${
-              readyCount > 0 && !state.harvesting ? "" : "disabled"
-            }>
-              ${state.harvesting ? "收菜中" : "一键收菜"}
-            </button>
-          </div>
+        <div class="overview-action">
+          ${renderCareButton(careCount, careNeeded, "overview-care")}
+          ${renderHarvestButton(readyCount)}
+        </div>
+        <div class="hero-stats">
+          <button type="button" class="stat-card" data-action="scroll-to-panel" data-panel="farm-status">
+            <span class="stat-value">${growingCount} · ${emptyCount}</span>
+            <span class="stat-label">生长中 · 空地</span>
+          </button>
+          <button type="button" class="stat-card ${careCount > 0 ? "warn" : ""}" data-action="scroll-to-panel" data-panel="farm-status">
+            <span class="stat-value">${careCount > 0 ? `${careCount} 块` : "正常"}</span>
+            <span class="stat-label">待务农</span>
+          </button>
+          <button type="button" class="stat-card" data-action="scroll-to-panel" data-panel="inventory">
+            <span class="stat-value">${inventory.length} 种 · ${formatUsd(totalInventoryValue)}</span>
+            <span class="stat-label">仓库 · 总回收价值</span>
+          </button>
         </div>
       </section>
       ${autoHarvestNoticeHtml}
@@ -2609,12 +2800,9 @@
           ${farmPlots.map((crop) => renderPlotCard(crop)).join("")}
         </div>
         ${renderNotice(state.careNotice, state.careNoticeType, "careNotice")}
-        <div class="farm-care-actions">
-          <button class="inventory-sell-selected farm-care-all" type="button" data-action="care-all" ${
-            state.careBusy || !careNeeded ? "disabled" : ""
-          }>
-            ${state.careBusy ? "务农中" : careNeeded ? `一键务农 (${careCount})` : "一键务农"}
-          </button>
+        <div class="farm-care-actions" data-scroll-anchor="farm-status">
+          ${renderCareButton(careCount, careNeeded, "inventory-sell-selected")}
+          ${renderHarvestButton(readyCount)}
         </div>
       </details>
       <details class="farm-status-panel" data-panel="auto-harvest" ${
@@ -2652,7 +2840,7 @@
         </div>
         ${
           inventory.length > 0
-            ? `<div class="inventory-actions">
+            ? `<div class="inventory-actions" data-scroll-anchor="inventory">
                 <label class="inventory-select-toggle">
                   <input class="inventory-select-checkbox" type="checkbox" ${state.inventorySelectMode ? "checked" : ""}>
                   <span>多选</span>

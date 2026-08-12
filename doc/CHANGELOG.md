@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## [3.1.0] — 2026-08-12
+
+### Added
+- 我的农场总览 hero 重新设计：焦点大数字（可收获数量/下一块成熟 HH:mm）+ 一键行动区 + 三格统计条（生长中·空地 / 待务农 / 仓库·总回收价值）
+- 统计条点击滚动定位到对应面板按钮（`data-action="scroll-to-panel"` + `data-scroll-anchor` 精确锚点）
+- `formatClock(date)` 工具函数（北京时间 HH:mm 短格式）
+- `renderHarvestButton(readyCount)` / `renderCareButton(careCount, careNeeded, className)` 共享渲染函数，消除按钮 HTML 重复
+
+### Changed
+- 一键务农按钮同时出现在总览 hero（描边样式）和农场情况面板（填充样式）
+- 一键收菜按钮同时出现在总览 hero 和农场情况面板（务农按钮右侧）
+- 一键收菜按钮显示可收获个数：`一键收菜 (N)`
+- 总览两个行动按钮统一尺寸（36px），靠颜色区分主次
+- AGENTS.md 同步更新架构说明和新增约定
+
 ## [3.0.0] — 2026-08-12
 
 ### Added
